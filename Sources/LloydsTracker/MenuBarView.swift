@@ -5,6 +5,8 @@ struct MenuBarView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
+    private let maxVisibleEntries = 8
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -142,14 +144,27 @@ struct MenuBarView: View {
                     .foregroundStyle(Color.lloydsGray.opacity(0.6))
                     .padding(.vertical, 6)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(engine.entries.reversed()) { entry in
-                            entryRow(entry)
+                // Bez ScrollView-a: MenuBarExtra prozor zna krivo izmjeriti fleksibilnu
+                // visinu pa odreže sadržaj. Fiksan broj redova → točna visina.
+                let hidden = engine.entries.count - maxVisibleEntries
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(engine.entries.suffix(maxVisibleEntries).reversed()) { entry in
+                        entryRow(entry)
+                    }
+                    if hidden > 0 {
+                        Button {
+                            NSApp.activate(ignoringOtherApps: true)
+                            openWindow(id: "summary")
+                        } label: {
+                            Text("… i još \(hidden) ranijih — Pregled dana")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.lloydsGray.opacity(0.7))
+                                .underline()
                         }
+                        .buttonStyle(.plain)
+                        .padding(.top, 2)
                     }
                 }
-                .frame(maxHeight: 180)
             }
         }
         .padding(.horizontal, 16)
