@@ -21,7 +21,7 @@ final class PromptController {
         request: PromptRequest,
         style: PromptStyle,
         history: [String],
-        onSubmit: @escaping (String) -> Void,
+        onSubmit: @escaping ([PromptSegment]) -> Void,
         onSnooze: @escaping () -> Void
     ) {
         guard window == nil else { return }
@@ -30,13 +30,16 @@ final class PromptController {
             request: request,
             style: style,
             history: history,
-            onSubmit: { [weak self] text in
+            onSubmit: { [weak self] segments in
                 self?.close()
-                onSubmit(text)
+                onSubmit(segments)
             },
             onSnooze: { [weak self] in
                 self?.close()
                 onSnooze()
+            },
+            onLayoutChange: { [weak self] in
+                self?.resizeFloatingToFit()
             }
         )
         let hosting = NSHostingView(rootView: view)
@@ -85,6 +88,18 @@ final class PromptController {
             win.makeKeyAndOrderFront(nil)
             window = win
         }
+    }
+
+    /// Kad razdvajanje blokova promijeni visinu sadržaja, prilagodi floating panel
+    /// (sidren za gornji rub, kao i početno pozicioniranje).
+    private func resizeFloatingToFit() {
+        guard let panel = window as? KeyablePanel, let content = panel.contentView else { return }
+        let size = content.fittingSize
+        guard size.height > 0, abs(size.height - panel.frame.height) > 0.5 else { return }
+        var frame = panel.frame
+        frame.origin.y = frame.maxY - size.height
+        frame.size = size
+        panel.setFrame(frame, display: true, animate: false)
     }
 
     func close() {

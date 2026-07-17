@@ -65,7 +65,16 @@ final class TrackerEngine: ObservableObject {
         currentDayKey = Store.dayKey(now)
         entries = Store.loadDay(currentDayKey)
         sessionStart = now
-        lastCovered = now
+
+        // Trackaj od početka trenutnog intervala (npr. start u 9:56 uz 15 min → od 9:45).
+        // Ako nakon početka intervala već postoji neki unos, kreni od početka trenutnog
+        // 5-min bloka (i nikad prije kraja zadnjeg unosa) da ne nastane dupli zapis.
+        let intervalStart = Self.gridFloor(now, step: interval)
+        var coverFrom = intervalStart
+        if let latestEnd = entries.map(\.end).max(), latestEnd > intervalStart {
+            coverFrom = max(Self.gridFloor(now, step: 300), latestEnd)
+        }
+        lastCovered = min(coverFrom, now)
         pauseUntil = nil
         pausedSince = nil
         awaitingReturnSince = nil
@@ -129,7 +138,25 @@ final class TrackerEngine: ObservableObject {
 
     func snooze(minutes: Int) {
         prompt.close()
-        nextPromptAt = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        // Zaokruži na 5-min mrežu da periodi (i trajanja) ostanu poravnati.
+        let target = Self.snapToGrid(Date().addingTimeInterval(TimeInterval(minutes * 60)))
+        nextPromptAt = max(target, Date().addingTimeInterval(60))
+    }
+
+    /// Najbliža točka 5-minutne mreže (npr. 10:17:40 → 10:20).
+    private static func snapToGrid(_ date: Date) -> Date {
+        let cal = Calendar.current
+        guard let hourStart = cal.dateInterval(of: .hour, for: date)?.start else { return date }
+        let step: TimeInterval = 300
+        return hourStart.addingTimeInterval((date.timeIntervalSince(hourStart) / step).rounded() * step)
+    }
+
+    /// Početak bloka mreže u kojem se `date` nalazi (npr. 9:56 uz step 900 → 9:45).
+    private static func gridFloor(_ date: Date, step: TimeInterval) -> Date {
+        let cal = Calendar.current
+        guard let hourStart = cal.dateInterval(of: .hour, for: date)?.start else { return date }
+        let elapsed = date.timeIntervalSince(hourStart)
+        return hourStart.addingTimeInterval(floor(elapsed / step) * step)
     }
 
     func deleteEntry(id: UUID, dayKey: String) {
@@ -188,9 +215,12 @@ final class TrackerEngine: ObservableObject {
         } else if settings.idleDetectionEnabled && idle >= TimeInterval(settings.idleThresholdMinutes * 60) {
             awaitingReturnSince = max(now.addingTimeInterval(-idle), lastCovered)
         } else {
+            // Kraj perioda je zakazano (poravnato) vrijeme prompta, ne trenutak odgovora —
+            // tako su unosi uvijek točno na 5-min mreži, a kašnjenje odgovora se
+            // prelijeva u sljedeći period.
             show(PromptRequest(
                 start: lastCovered,
-                end: nil,
+                end: nextPromptAt ?? now,
                 allowSnooze: settings.promptStyle == .floating
             ))
         }
@@ -239,32 +269,34 @@ final class TrackerEngine: ObservableObject {
             request: request,
             style: settings.promptStyle,
             history: history
-        ) { [weak self] text in
-            self?.handleSubmit(request, text: text)
+        ) { [weak self] segments in
+            self?.handleSubmit(request, segments: segments)
         } onSnooze: { [weak self] in
             self?.snooze(minutes: 5)
         }
     }
 
-    private func handleSubmit(_ request: PromptRequest, text: String) {
+    private func handleSubmit(_ request: PromptRequest, segments: [PromptSegment]) {
         let now = Date()
-        let end = request.end ?? now
-        if end.timeIntervalSince(request.start) > 5 {
-            entries.append(Entry(start: request.start, end: end, text: text, kind: .work))
+        var coveredEnd = request.start
+        for seg in segments where seg.end.timeIntervalSince(seg.start) > 5 {
+            entries.append(Entry(start: seg.start, end: seg.end, text: seg.text, kind: .work))
+            // Kronološki redoslijed → zadnji segment završi kao history.first (prefill za idući prompt).
+            pushHistory(seg.text)
+            coveredEnd = max(coveredEnd, seg.end)
         }
         if let pending = request.pauseAfter, now > pending.start {
             entries.append(Entry(start: pending.start, end: now, text: pending.reason, kind: .pause))
             lastCovered = max(lastCovered, now)
         } else {
-            lastCovered = max(lastCovered, end)
+            lastCovered = max(lastCovered, request.end ?? coveredEnd)
         }
-        pushHistory(text)
         persistDay()
 
         if request.isFinal {
             finalizeStop()
         } else if pauseUntil == nil {
-            nextPromptAt = alignedNextPrompt(after: now)
+            nextPromptAt = alignedNextPrompt(after: max(now, lastCovered))
         }
     }
 
@@ -288,7 +320,7 @@ final class TrackerEngine: ObservableObject {
 
     private func settingsChanged(from old: AppSettings) {
         if old.intervalMinutes != settings.intervalMinutes, isTracking, pauseUntil == nil {
-            nextPromptAt = max(Date().addingTimeInterval(5), alignedNextPrompt(after: Date()))
+            nextPromptAt = alignedNextPrompt(after: Date())
         }
         if old.historyLimit != settings.historyLimit, history.count > settings.historyLimit {
             history = Array(history.prefix(settings.historyLimit))

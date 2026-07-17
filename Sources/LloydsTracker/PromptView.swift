@@ -4,36 +4,87 @@ struct PromptView: View {
     let request: PromptRequest
     let style: PromptStyle
     let history: [String]
-    let onSubmit: (String) -> Void
+    let onSubmit: ([PromptSegment]) -> Void
     let onSnooze: () -> Void
+    let onLayoutChange: () -> Void
 
-    @State private var text: String
-    @State private var draft: String
-    @State private var historyIndex: Int?
-    @FocusState private var focused: Bool
+    /// Spojeni niz blokova s jednim opisom; identitet mu je vrijeme početka.
+    private struct Segment: Identifiable {
+        let start: Date
+        let end: Date
+        var id: Date { start }
+    }
+
+    private let periodStart: Date
+    private let periodEnd: Date
+    /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti.
+    private let boundaries: [Date]
+
+    @State private var splitPoints: Set<Date> = []
+    /// Tekst po segmentu, ključ = početak segmenta. Preživljava spajanje/razdvajanje.
+    @State private var texts: [Date: String]
+    @State private var drafts: [Date: String] = [:]
+    @State private var historyIndices: [Date: Int] = [:]
+    @FocusState private var focusedField: Date?
 
     init(
         request: PromptRequest,
         style: PromptStyle,
         history: [String],
-        onSubmit: @escaping (String) -> Void,
-        onSnooze: @escaping () -> Void
+        onSubmit: @escaping ([PromptSegment]) -> Void,
+        onSnooze: @escaping () -> Void,
+        onLayoutChange: @escaping () -> Void = {}
     ) {
         self.request = request
         self.style = style
         self.history = history
         self.onSubmit = onSubmit
         self.onSnooze = onSnooze
-        let prefill = history.first ?? ""
-        _text = State(initialValue: prefill)
-        _draft = State(initialValue: prefill)
+        self.onLayoutChange = onLayoutChange
+        let start = request.start
+        let end = max(request.end ?? Date(), start)
+        self.periodStart = start
+        self.periodEnd = end
+        self.boundaries = Self.gridBoundaries(from: start, to: end)
+        _texts = State(initialValue: [start: history.first ?? ""])
     }
 
     private var prefill: String { history.first ?? "" }
 
+    private var segments: [Segment] {
+        var result: [Segment] = []
+        var s = periodStart
+        for p in boundaries where splitPoints.contains(p) {
+            result.append(Segment(start: s, end: p))
+            s = p
+        }
+        result.append(Segment(start: s, end: periodEnd))
+        return result
+    }
+
     private var timeRange: String {
-        let end = request.end ?? Date()
-        return "\(Fmt.hhmm(request.start)) – \(Fmt.hhmm(end))"
+        "\(Fmt.hhmm(periodStart)) – \(Fmt.hhmm(periodEnd))"
+    }
+
+    /// Točke 5-min mreže strogo unutar perioda (min. 2 min od rubova).
+    /// Za jako duge periode mreža se prorjeđuje da ne bude više od 12 blokova.
+    static func gridBoundaries(from start: Date, to end: Date) -> [Date] {
+        guard end.timeIntervalSince(start) > 240,
+              let hourStart = Calendar.current.dateInterval(of: .hour, for: start)?.start
+        else { return [] }
+
+        for stepMinutes in [5, 10, 15, 30, 60] {
+            let step = TimeInterval(stepMinutes * 60)
+            var t = hourStart
+            while t <= start.addingTimeInterval(120) { t += step }
+            var points: [Date] = []
+            while t <= end.addingTimeInterval(-120) {
+                points.append(t)
+                t += step
+            }
+            if points.count <= 11 { return points }
+        }
+        return []
     }
 
     var body: some View {
@@ -99,31 +150,26 @@ struct PromptView: View {
                     .foregroundStyle(Color.lloydsYellow.opacity(0.9))
             }
 
-            TextField("npr. Projekt X — opis zadatka", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: big ? 17 : 14))
-                .foregroundStyle(.white)
-                .tint(Color.lloydsYellow)
-                .padding(big ? 14 : 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.07))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.lloydsYellow.opacity(focused ? 0.8 : 0.25), lineWidth: 1)
-                )
-                .focused($focused)
-                .onSubmit(submit)
-                .onKeyPress(.upArrow) { cycleHistory(older: true); return .handled }
-                .onKeyPress(.downArrow) { cycleHistory(older: false); return .handled }
-                .onKeyPress(.escape) { handleEscape() }
+            if !boundaries.isEmpty {
+                blockBar
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(segments) { seg in
+                    segmentRow(seg, big: big, single: segments.count == 1)
+                }
+            }
 
             HStack(spacing: 14) {
                 hint("↑↓", "povijest")
                 hint("⏎", "spremi")
-                if style == .floating && !prefill.isEmpty {
-                    hint("esc", "isto kao zadnje")
+                if segments.count == 1 {
+                    if style == .floating && !prefill.isEmpty {
+                        hint("esc", "isto kao zadnje")
+                    }
+                    if !boundaries.isEmpty {
+                        hint("✂", "razbij period")
+                    }
                 }
                 Spacer()
                 if request.allowSnooze {
@@ -139,12 +185,127 @@ struct PromptView: View {
         .frame(width: width)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                focused = true
+                focusedField = periodStart
             }
         }
         .onExitCommand {
             _ = handleEscape()
         }
+    }
+
+    // MARK: - Traka blokova
+
+    private var blockBar: some View {
+        let total = max(periodEnd.timeIntervalSince(periodStart), 1)
+        return VStack(alignment: .leading, spacing: 3) {
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    ForEach(segments) { seg in
+                        let x = CGFloat(seg.start.timeIntervalSince(periodStart) / total) * w
+                        let sw = CGFloat(seg.end.timeIntervalSince(seg.start) / total) * w
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.lloydsYellow.opacity(focusedField == seg.start || segments.count == 1 ? 0.85 : 0.4))
+                            .frame(width: max(6, sw - 4), height: 20)
+                            .offset(x: x + 2)
+                            .onTapGesture { focusedField = seg.start }
+                    }
+                    ForEach(boundaries, id: \.self) { b in
+                        let x = CGFloat(b.timeIntervalSince(periodStart) / total) * w
+                        splitHandle(b)
+                            .offset(x: x - 10, y: 0)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: splitPoints)
+            }
+            .frame(height: 20)
+
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .topLeading) {
+                    ForEach(boundaries, id: \.self) { b in
+                        let x = CGFloat(b.timeIntervalSince(periodStart) / total) * w
+                        Text(Fmt.hhmm(b))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(splitPoints.contains(b) ? Color.lloydsYellow : Color.lloydsGray.opacity(0.55))
+                            .frame(width: 40)
+                            .offset(x: x - 20)
+                    }
+                }
+            }
+            .frame(height: 11)
+        }
+    }
+
+    private func splitHandle(_ b: Date) -> some View {
+        let isSplit = splitPoints.contains(b)
+        return Button {
+            toggleSplit(b)
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.lloydsBlack)
+                    .overlay(Circle().stroke(isSplit ? Color.lloydsYellow : Color.white.opacity(0.35), lineWidth: 1))
+                Image(systemName: isSplit ? "xmark" : "scissors")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(isSplit ? Color.lloydsYellow : Color.lloydsGray)
+            }
+            .frame(width: 20, height: 20)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(isSplit ? "Spoji blokove" : "Razdvoji u \(Fmt.hhmm(b))")
+    }
+
+    private func toggleSplit(_ b: Date) {
+        if splitPoints.contains(b) {
+            splitPoints.remove(b)
+            focusedField = segments.last(where: { $0.start <= b })?.start ?? periodStart
+        } else {
+            splitPoints.insert(b)
+            if texts[b] == nil { texts[b] = "" }
+            focusedField = b
+        }
+        DispatchQueue.main.async { onLayoutChange() }
+    }
+
+    // MARK: - Redovi segmenata
+
+    private func segmentRow(_ seg: Segment, big: Bool, single: Bool) -> some View {
+        HStack(spacing: 8) {
+            if !single {
+                Text("\(Fmt.hhmm(seg.start))–\(Fmt.hhmm(seg.end))")
+                    .font(.system(size: big ? 12 : 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(focusedField == seg.start ? Color.lloydsYellow : Color.lloydsGray)
+                    .frame(width: big ? 96 : 80, alignment: .leading)
+            }
+            TextField("npr. Projekt X — opis zadatka", text: binding(for: seg.start))
+                .textFieldStyle(.plain)
+                .font(.system(size: big ? 17 : 14))
+                .foregroundStyle(.white)
+                .tint(Color.lloydsYellow)
+                .padding(big ? 14 : 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.07))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.lloydsYellow.opacity(focusedField == seg.start ? 0.8 : 0.25), lineWidth: 1)
+                )
+                .focused($focusedField, equals: seg.start)
+                .onSubmit(submit)
+                .onKeyPress(.upArrow) { cycleHistory(older: true); return .handled }
+                .onKeyPress(.downArrow) { cycleHistory(older: false); return .handled }
+                .onKeyPress(.escape) { handleEscape() }
+        }
+    }
+
+    private func binding(for key: Date) -> Binding<String> {
+        Binding(
+            get: { texts[key] ?? "" },
+            set: { texts[key] = $0 }
+        )
     }
 
     private func hint(_ key: String, _ label: String) -> some View {
@@ -160,32 +321,42 @@ struct PromptView: View {
         .foregroundStyle(Color.lloydsGray)
     }
 
+    // MARK: - Akcije
+
     private func submit() {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        onSubmit(t)
+        var out: [PromptSegment] = []
+        for seg in segments {
+            let t = (texts[seg.start] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else {
+                focusedField = seg.start
+                return
+            }
+            out.append(PromptSegment(start: seg.start, end: seg.end, text: t))
+        }
+        guard !out.isEmpty else { return }
+        onSubmit(out)
     }
 
     private func handleEscape() -> KeyPress.Result {
-        if style == .floating, !prefill.isEmpty {
-            onSubmit(prefill)
+        if style == .floating, segments.count == 1, !prefill.isEmpty {
+            onSubmit([PromptSegment(start: periodStart, end: periodEnd, text: prefill)])
             return .handled
         }
-        return .handled // fullscreen: esc ne radi ništa (non-skippable)
+        return .handled // fullscreen ili razdvojeno: esc ne radi ništa
     }
 
     private func cycleHistory(older: Bool) {
-        guard !history.isEmpty else { return }
-        if historyIndex == nil { draft = text }
-        var idx = historyIndex ?? -1
+        guard let key = focusedField, !history.isEmpty else { return }
+        if historyIndices[key] == nil { drafts[key] = texts[key] ?? "" }
+        var idx = historyIndices[key] ?? -1
         idx += older ? 1 : -1
         if idx < 0 {
-            historyIndex = nil
-            text = draft
+            historyIndices[key] = nil
+            texts[key] = drafts[key] ?? ""
             return
         }
         idx = min(idx, history.count - 1)
-        historyIndex = idx
-        text = history[idx]
+        historyIndices[key] = idx
+        texts[key] = history[idx]
     }
 }

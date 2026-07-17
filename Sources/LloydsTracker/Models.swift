@@ -39,6 +39,13 @@ struct AppSettings: Codable, Equatable {
     var launchAtLogin: Bool = false
 }
 
+/// Jedan blok (ili spojeni niz blokova) unutar prompt perioda, s pripadajućim opisom.
+struct PromptSegment {
+    var start: Date
+    var end: Date
+    var text: String
+}
+
 struct PromptRequest {
     struct PendingPause {
         var start: Date
