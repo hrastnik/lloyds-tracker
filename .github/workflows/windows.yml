@@ -1,0 +1,39 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore windows/LloydsTracker/LloydsTracker.csproj
+
+      - name: Publish (self-contained single-file win-x64)
+        run: dotnet publish windows/LloydsTracker/LloydsTracker.csproj -c Release --no-restore -o windows/dist
+
+      - name: Upload LloydsTracker.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: LloydsTracker-win-x64
+          path: windows/dist/LloydsTracker.exe
+          if-no-files-found: error

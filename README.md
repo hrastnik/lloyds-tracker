@@ -1,75 +1,53 @@
 # Lloyds Tracker
 
-Nativna macOS menu bar aplikacija za praćenje vremena na poslu, u Lloyds Digital vizualnom stilu (crna `#070707` + žuta `#FBDE07`).
+Aplikacija za praćenje vremena na poslu u Lloyds Digital vizualnom stilu
+(crna `#070707` + žuta `#FBDE07`). Sjedi u traci (menu bar / system tray) i u
+zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se spremaju
+lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
+exportati u CSV.
 
-Sjedi u status baru i u zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se spremaju lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili exportati u CSV — za lako prepisivanje u firmin online tool.
+Dvije nativne verzije, isti JSON format podataka:
 
-## Build i instalacija
+| Verzija | Tehnologija | Folder |
+|---|---|---|
+| **macOS** | Swift 6 / SwiftUI + AppKit (`MenuBarExtra`) | [`macos/`](macos/) |
+| **Windows** | C# / .NET 8 + WinForms (`NotifyIcon`) | [`windows/`](windows/) |
+
+## macOS
 
 ```sh
-./build.sh                                  # builda dist/LloydsTracker.app
-cp -r dist/LloydsTracker.app /Applications/ # instalacija
-open /Applications/LloydsTracker.app
+cd macos
+./build.sh                                  # → macos/dist/LloydsTracker.app
+cp -r dist/LloydsTracker.app /Applications/
 ```
 
-Za razvoj: `swift run` (radi i bez .app bundle-a, ali "launch at login" tada nije dostupan).
+Zahtjevi: macOS 14+, Swift 6 toolchain. Detalji: [macos/README.md](macos/README.md).
 
-Zahtjevi: macOS 14+, Xcode toolchain (Swift 6).
+## Windows
 
-## Korištenje
+```powershell
+cd windows
+.\build.ps1                                 # → windows\dist\LloydsTracker.exe
+```
 
-1. Klik na ikonu sata u status baru → **Start — počni radni dan**.
-2. Svakih 15 min iskoči prompt. Polje je **pre-fillano zadnjim unosom**:
-   - `⏎` — spremi (ako radiš isto, samo stisni Enter)
-   - `↑` / `↓` — listanje povijesti nedavnih unosa
-   - `esc` — spremi isto kao zadnji put (samo floating stil)
-   - *Odgodi 5 min* — snooze (samo floating stil)
-3. **Pauziraj** (15/30/60 min ili do nastavka) — bez promptanja, vrijeme se bilježi kao pauza.
-4. **Završi dan** → otvara se pregled dana s grupiranim vremenima, *Kopiraj pregled* ili *Export CSV*.
+Zahtjevi: .NET 8 SDK (Windows). Jedan self-contained `.exe`, bez runtime instalacije.
+Detalji: [windows/README.md](windows/README.md).
 
-### Detekcija odsutnosti
-
-Ako je ekran zaključan ili nema aktivnosti dulje od praga (default 5 min), prompt se odgađa dok se ne vratiš. Po povratku te pita što si radio **prije** odsutnosti, a sama odsutnost se automatski bilježi kao pauza — podaci ti tako ne lažu.
-
-## Postavke
-
-Status bar ikona → *Postavke…*
-
-| Postavka | Default |
-|---|---|
-| Interval promptanja | 15 min (5–60) |
-| Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
-| Zvuk kod prompta | uključen |
-| Detekcija odsutnosti + prag | uključena, 5 min |
-| Broj zapamćenih unosa (povijest) | 15 |
-| Pokreni kod prijave | isključeno (zahtijeva .app u /Applications) |
+Windows verziju automatski builda **GitHub Actions CI** ([.github/workflows/windows.yml](.github/workflows/windows.yml)) —
+gotov `.exe` je dostupan kao build artifact na svakom pushu.
 
 ## Podaci
 
-Sve je lokalno, u čitljivom JSON formatu:
+Obje verzije spremaju iste, čitljive JSON datoteke (ISO 8601 UTC vremena, pa su
+međusobno kompatibilne):
 
 ```
-~/Library/Application Support/LloydsTracker/
-├── 2026-07-15.json   # unosi po danu (start, end, text, kind)
-├── history.json      # povijest unosa za pre-fill
-└── settings.json     # postavke
+2026-07-15.json   # unosi po danu (start, end, text, kind)
+history.json      # povijest unosa za pre-fill
+settings.json     # postavke
 ```
 
-CSV export format: `start,end,minutes,text,kind` (ISO 8601 vremena).
+- macOS: `~/Library/Application Support/LloydsTracker/`
+- Windows: `%APPDATA%\LloydsTracker\`
 
-## Struktura koda
-
-```
-Sources/LloydsTracker/
-├── App.swift              # MenuBarExtra + prozori (SwiftUI App)
-├── TrackerEngine.swift    # stanje, timer, prompt logika, idle/pauze
-├── PromptController.swift # NSPanel (floating) / NSWindow (fullscreen)
-├── PromptView.swift       # UI prompta s povijesti i pre-fillom
-├── MenuBarView.swift      # popover iz status bara
-├── SummaryView.swift      # pregled dana, copy/CSV export
-├── SettingsView.swift     # postavke
-├── Store.swift            # JSON pohrana
-├── IdleMonitor.swift      # detekcija neaktivnosti (CGEventSource)
-├── Models.swift           # Entry, AppSettings, grupiranje
-└── Theme.swift            # Lloyds boje i formatiranje
-```
+CSV export: `start,end,minutes,text,kind`.

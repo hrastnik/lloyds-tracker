@@ -1,5 +1,13 @@
-.build/
-dist/
 .DS_Store
+
+# macOS app (Swift / SwiftPM)
+macos/.build/
+macos/dist/
 *.xcodeproj
 .swiftpm/
+
+# Windows app (.NET)
+windows/**/bin/
+windows/**/obj/
+windows/dist/
+*.user

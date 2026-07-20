@@ -1,0 +1,305 @@
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace LloydsTracker;
+
+/// <summary>"Pregled dana" — grouped/chronological day view with copy, CSV export,
+/// per-entry delete and day navigation. Mirrors the SwiftUI SummaryView.</summary>
+internal sealed class SummaryForm : Form
+{
+    private enum ViewMode { Grouped, Chronological }
+
+    private readonly TrackerEngine _engine;
+    private DateTime _date = DateTime.Now;
+    private ViewMode _mode = ViewMode.Grouped;
+
+    private Panel _header = null!;
+    private Panel _content = null!;
+    private Panel _footer = null!;
+    private Label _dayLabel = null!;
+    private Label _workBadge = null!;
+    private Label _pauseBadge = null!;
+    private FlatButton _nextButton = null!;
+    private FlatButton _copyButton = null!;
+    private FlatButton _groupedTab = null!;
+    private FlatButton _chronoTab = null!;
+
+    private string DayKey => Store.DayKey(_date);
+    private IReadOnlyList<Entry> Entries => DayKey == _engine.CurrentDayKey ? _engine.Entries : Store.LoadDay(DayKey);
+
+    public SummaryForm(TrackerEngine engine)
+    {
+        _engine = engine;
+        Text = "Pregled dana";
+        MinimumSize = new Size(520, 440);
+        ClientSize = new Size(560, 520);
+        StartPosition = FormStartPosition.CenterScreen;
+        BackColor = Palette.Black;
+        Font = Brand.Ui(9f);
+
+        BuildChrome();
+        _engine.Changed += OnEngineChanged;
+        Rebuild();
+    }
+
+    private void OnEngineChanged()
+    {
+        if (DayKey == _engine.CurrentDayKey) Rebuild();
+    }
+
+    public void RefreshData() => Rebuild();
+
+    private void BuildChrome()
+    {
+        _footer = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = Palette.Black };
+        _footer.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Palette.White.OverBlack(0.15) });
+        _header = new Panel { Dock = DockStyle.Top, Height = 108, BackColor = Palette.Black };
+        _header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Palette.White.OverBlack(0.15) });
+        _content = new Panel { Dock = DockStyle.Fill, BackColor = Palette.Black, AutoScroll = true };
+
+        // Fill added first (lowest z-order → laid out last, takes remaining space);
+        // edge-docked header/footer added after.
+        Controls.Add(_content);
+        Controls.Add(_header);
+        Controls.Add(_footer);
+
+        BuildHeader();
+        BuildFooter();
+        _content.SizeChanged += (_, _) => LayoutContent();
+    }
+
+    private void BuildHeader()
+    {
+        var prev = new FlatButton { Text = "◀", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(30, 26), Location = new Point(16, 14) };
+        prev.Click += (_, _) => { _date = _date.AddDays(-1); Rebuild(); };
+        _header.Controls.Add(prev);
+
+        _nextButton = new FlatButton { Text = "▶", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(30, 26) };
+        _nextButton.Click += (_, _) => { if (!IsToday()) { _date = _date.AddDays(1); Rebuild(); } };
+        _nextButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _nextButton.Location = new Point(ClientSize.Width - 16 - 30, 14);
+        _header.Controls.Add(_nextButton);
+
+        _dayLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Brand.Ui(11.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(52, 14), Size = new Size(ClientSize.Width - 104, 26), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        _header.Controls.Add(_dayLabel);
+
+        _workBadge = MakeBadge("RAD", Palette.Yellow, new Point(16, 56));
+        _pauseBadge = MakeBadge("PAUZE", Palette.Gray, new Point(0, 56));
+        _header.Controls.Add(_workBadge);
+        _header.Controls.Add(_pauseBadge);
+
+        _groupedTab = MakeTab("Grupirano", ViewMode.Grouped);
+        _chronoTab = MakeTab("Kronološki", ViewMode.Chronological);
+        _groupedTab.Anchor = _chronoTab.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _header.Controls.Add(_groupedTab);
+        _header.Controls.Add(_chronoTab);
+    }
+
+    private Label MakeBadge(string label, Color color, Point loc)
+        => new()
+        {
+            AutoSize = false,
+            Text = "",
+            BackColor = Palette.White.OverBlack(0.06),
+            Location = loc,
+            Size = new Size(120, 26),
+            Padding = new Padding(8, 0, 8, 0),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Tag = (label, color),
+        };
+
+    private void RenderBadge(Label badge, string value)
+    {
+        var (label, color) = ((string, Color))badge.Tag!;
+        badge.Text = $"{label}  {value}";
+        badge.Font = Brand.Mono(9.5f, FontStyle.Bold);
+        badge.ForeColor = color;
+    }
+
+    private FlatButton MakeTab(string text, ViewMode mode)
+    {
+        var tab = new FlatButton
+        {
+            Text = text,
+            Font = Brand.Ui(9f, FontStyle.Bold),
+            CornerRadius = 6,
+            BackColor = Palette.Black,
+            Size = new Size(96, 26),
+        };
+        tab.Click += (_, _) => { _mode = mode; Rebuild(); };
+        return tab;
+    }
+
+    private void PositionTabs()
+    {
+        int right = ClientSize.Width - 16;
+        _chronoTab.Location = new Point(right - _chronoTab.Width, 56);
+        _groupedTab.Location = new Point(_chronoTab.Left - _groupedTab.Width - 2, 56);
+    }
+
+    private void BuildFooter()
+    {
+        _copyButton = new FlatButton { Text = "Kopiraj pregled", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(140, 28), Location = new Point(12, 12) };
+        _copyButton.Click += (_, _) => CopyOverview();
+        _footer.Controls.Add(_copyButton);
+
+        var csv = new FlatButton { Text = "Export CSV…", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(120, 28), Location = new Point(160, 12) };
+        csv.Click += (_, _) => ExportCsv();
+        _footer.Controls.Add(csv);
+
+        var folder = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Gray, Font = Brand.Ui(9f), BackColor = Palette.Black, Size = new Size(180, 28), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        folder.Location = new Point(ClientSize.Width - 12 - folder.Width, 12);
+        folder.Click += (_, _) => OpenDataFolder();
+        _footer.Controls.Add(folder);
+    }
+
+    private bool IsToday() => DayKey == Store.DayKey(DateTime.Now);
+
+    private void Rebuild()
+    {
+        _dayLabel.Text = Fmt.DayTitle(_date);
+        _nextButton.Enabled = !IsToday();
+        RenderBadge(_workBadge, Fmt.Dur(Summarize.WorkTotal(Entries)));
+        RenderBadge(_pauseBadge, Fmt.Dur(Summarize.PauseTotal(Entries)));
+        _pauseBadge.Location = new Point(_workBadge.Right + 8, 56);
+
+        bool grouped = _mode == ViewMode.Grouped;
+        StyleTab(_groupedTab, grouped);
+        StyleTab(_chronoTab, !grouped);
+        PositionTabs();
+
+        LayoutContent();
+    }
+
+    private void StyleTab(FlatButton tab, bool active)
+    {
+        tab.Fill = active ? Palette.Yellow : Color.Transparent;
+        tab.TextColor = active ? Palette.Black : Palette.Gray;
+        tab.BorderColor = active ? Color.Transparent : Palette.White.OverBlack(0.2);
+        tab.BorderWidth = active ? 0 : 1;
+        tab.Invalidate();
+    }
+
+    private void LayoutContent()
+    {
+        _content.SuspendLayout();
+        foreach (Control c in _content.Controls.Cast<Control>().ToList()) c.Dispose();
+        _content.Controls.Clear();
+
+        var entries = Entries;
+        int width = _content.ClientSize.Width - 32;
+        if (width < 40) { _content.ResumeLayout(true); return; }
+
+        if (entries.Count == 0)
+        {
+            var empty = new Label { AutoSize = true, Text = "Nema unosa za ovaj dan.", ForeColor = Palette.Gray, BackColor = Palette.Black, Font = Brand.Ui(10f), Location = new Point(16, 24) };
+            _content.Controls.Add(empty);
+            _content.ResumeLayout(true);
+            return;
+        }
+
+        int y = 16;
+        if (_mode == ViewMode.Grouped)
+        {
+            foreach (var group in Summarize.Groups(entries))
+                y = AddGroupRow(group, y, width);
+        }
+        else
+        {
+            foreach (var entry in entries)
+                y = AddChronoRow(entry, y, width);
+        }
+        _content.ResumeLayout(true);
+    }
+
+    private int AddGroupRow(GroupSummary group, int y, int width)
+    {
+        var row = new CardPanel { CardFill = Palette.White.OverBlack(0.04), BorderWidth = 0, Radius = 8, Location = new Point(16, y), Size = new Size(width, 52), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+
+        var dur = new Label { AutoSize = false, Text = Fmt.Dur(group.Total), Font = Brand.Mono(9.5f, FontStyle.Bold), ForeColor = Palette.Yellow, BackColor = row.CardFill, Location = new Point(10, 8), Size = new Size(70, 18), TextAlign = ContentAlignment.MiddleLeft };
+        row.Controls.Add(dur);
+
+        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = group.Text, Font = Brand.Ui(9.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = row.CardFill, Location = new Point(80, 8), Size = new Size(width - 90, 18), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        row.Controls.Add(text);
+
+        string ranges = string.Join(" · ", group.Ranges.Select(r => $"{Fmt.Hhmm(r.Start)}–{Fmt.Hhmm(r.End)}"));
+        var rangesLabel = new Label { AutoSize = false, Text = ranges, Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(0.7), BackColor = row.CardFill, Location = new Point(80, 28), Size = new Size(width - 90, 16), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        row.Controls.Add(rangesLabel);
+
+        _content.Controls.Add(row);
+        return y + 52 + 8;
+    }
+
+    private int AddChronoRow(Entry entry, int y, int width)
+    {
+        bool pause = entry.Kind == EntryKind.Pause;
+        var fill = Palette.White.OverBlack(0.03);
+        var row = new CardPanel { CardFill = fill, BorderWidth = 0, Radius = 6, Location = new Point(16, y), Size = new Size(width, 30), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+
+        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8.5f), ForeColor = Palette.Gray, BackColor = fill, Location = new Point(10, 7) };
+        row.Controls.Add(time);
+
+        var del = new FlatButton { Text = "✕", TextColor = Palette.Gray.With(0.6), Font = Brand.Ui(8f, FontStyle.Bold), BackColor = fill, Size = new Size(22, 22), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(width - 8 - 22, 4) };
+        del.Click += (_, _) => { _engine.DeleteEntry(entry.Id, DayKey); Rebuild(); };
+        row.Controls.Add(del);
+
+        var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8.5f), ForeColor = Palette.Gray.With(0.7), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        dur.Location = new Point(del.Left - 8 - dur.PreferredWidth, 7);
+        row.Controls.Add(dur);
+
+        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(time.Right + 10, 7), Size = new Size(dur.Left - 8 - (time.Right + 10), 16), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        row.Controls.Add(text);
+
+        _content.Controls.Add(row);
+        return y + 30 + 6;
+    }
+
+    // MARK: - Footer actions
+
+    private bool _copied;
+
+    private void CopyOverview()
+    {
+        string text = Summarize.ClipboardText(_date, Entries);
+        try { Clipboard.SetText(text); } catch { /* clipboard can be transiently locked */ }
+        if (_copied) return;
+        _copied = true;
+        _copyButton.Text = "Kopirano ✓";
+        var t = new System.Windows.Forms.Timer { Interval = 2000 };
+        t.Tick += (_, _) => { t.Stop(); t.Dispose(); _copied = false; if (!_copyButton.IsDisposed) _copyButton.Text = "Kopiraj pregled"; };
+        t.Start();
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            FileName = $"lloyds-tracker-{DayKey}.csv",
+            Filter = "CSV (*.csv)|*.csv",
+            DefaultExt = "csv",
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            try { File.WriteAllText(dialog.FileName, Summarize.Csv(Entries), new System.Text.UTF8Encoding(false)); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Greška", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        }
+    }
+
+    private void OpenDataFolder()
+    {
+        try { System.Diagnostics.Process.Start("explorer.exe", Store.Directory); }
+        catch { /* best effort */ }
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_groupedTab != null) PositionTabs();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _engine.Changed -= OnEngineChanged;
+        base.Dispose(disposing);
+    }
+}

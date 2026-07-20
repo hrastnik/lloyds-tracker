@@ -1,0 +1,455 @@
+using System.Media;
+using System.Windows.Forms;
+using WinFormsTimer = System.Windows.Forms.Timer;
+
+namespace LloydsTracker;
+
+public enum TrayState { Idle, Tracking, Paused, AwaitingReturn }
+
+/// <summary>State, timer, prompt logic, idle/pauses — the direct port of the macOS
+/// TrackerEngine. Runs entirely on the UI thread (WinForms timer), so no locking is
+/// needed, mirroring the original @MainActor actor isolation.</summary>
+public sealed class TrackerEngine : IDisposable
+{
+    // MARK: - Observable-equivalent state
+    public bool IsTracking { get; private set; }
+    public List<Entry> Entries { get; private set; } = new();
+    public List<string> History { get; private set; } = new();
+    public DateTime? PauseUntil { get; private set; }
+    public DateTime? NextPromptAt { get; private set; }
+    public DateTime? AwaitingReturnSince { get; private set; }
+    public string? LaunchAtLoginStatus { get; private set; }
+    public AppSettings Settings { get; private set; }
+
+    /// <summary>Fired (UI thread) whenever state changes; the tray/popover re-read state.</summary>
+    public event Action? Changed;
+
+    public string CurrentDayKey { get; private set; }
+
+    private DateTime? _sessionStart;
+    private DateTime _lastCovered = DateTime.Now;
+    private DateTime? _pausedSince;
+    private readonly SessionMonitor _session = new();
+    private readonly WinFormsTimer _timer;
+    private readonly PromptController _prompt = new();
+    private readonly StartupReminderController _startupReminder = new();
+    /// <summary>Hidden control used to marshal background-thread callbacks (SessionSwitch)
+    /// back onto the UI thread.</summary>
+    private readonly Control _marshal = new();
+
+    /// <summary>Set by the view layer — opens the "Pregled dana" window.</summary>
+    public Action OpenSummary { get; set; } = () => { };
+
+    public double Interval => Settings.IntervalMinutes * 60.0;
+    public bool IsPromptVisible => _prompt.IsVisible;
+
+    public TrackerEngine()
+    {
+        Settings = Store.LoadSettings();
+        History = Store.LoadHistory();
+        CurrentDayKey = Store.DayKey(DateTime.Now);
+        Entries = Store.LoadDay(CurrentDayKey);
+
+        _ = _marshal.Handle; // force handle creation on the UI thread
+        _session.Changed += OnSessionChanged;
+
+        _timer = new WinFormsTimer { Interval = 1000 };
+        _timer.Tick += (_, _) => Tick();
+        _timer.Start();
+
+        // Short delay so the app settles (tray icon, screens) before the pop-up.
+        var startupDelay = new WinFormsTimer { Interval = 1000 };
+        startupDelay.Tick += (_, _) =>
+        {
+            startupDelay.Stop();
+            startupDelay.Dispose();
+            ShowStartupReminderIfNeeded();
+        };
+        startupDelay.Start();
+    }
+
+    /// <summary>Launch reminder — only if enabled and the day isn't started yet.</summary>
+    public void ShowStartupReminderIfNeeded()
+    {
+        if (!Settings.ShowStartupReminder || IsTracking || _prompt.IsVisible) return;
+        _startupReminder.Show(Fmt.DayTitle(DateTime.Now), onStart: Start, onDismiss: () => { });
+    }
+
+    // MARK: - Controls
+
+    public void Start()
+    {
+        var now = DateTime.Now;
+        CurrentDayKey = Store.DayKey(now);
+        Entries = Store.LoadDay(CurrentDayKey);
+        _sessionStart = now;
+
+        // Track from the start of the current interval (e.g. start at 9:56 with 15 min → from 9:45).
+        // If an entry already exists past the interval start, begin at the current 5-min block
+        // (never before the last entry's end) to avoid a duplicate record.
+        var intervalStart = GridFloor(now, Interval);
+        var coverFrom = intervalStart;
+        if (Entries.Count > 0)
+        {
+            var latestEnd = Entries.Max(e => e.End);
+            if (latestEnd > intervalStart)
+                coverFrom = Max(GridFloor(now, 300), latestEnd);
+        }
+        _lastCovered = Min(coverFrom, now);
+        PauseUntil = null;
+        _pausedSince = null;
+        AwaitingReturnSince = null;
+        NextPromptAt = AlignedNextPrompt(now);
+        IsTracking = true;
+        RaiseChanged();
+    }
+
+    public void Stop()
+    {
+        if (!IsTracking) return;
+        var now = DateTime.Now;
+        if (PauseUntil != null) EndManualPause(now);
+        _prompt.Close();
+        if ((now - _lastCovered).TotalSeconds > 60)
+        {
+            Show(new PromptRequest
+            {
+                Start = _lastCovered,
+                End = now,
+                IsFinal = true,
+                Note = "Kraj dana — što si radio u zadnjem periodu?",
+                AllowSnooze = false
+            });
+        }
+        else
+        {
+            FinalizeStop();
+        }
+    }
+
+    private void FinalizeStop()
+    {
+        IsTracking = false;
+        NextPromptAt = null;
+        _sessionStart = null;
+        AwaitingReturnSince = null;
+        PersistDay();
+        RaiseChanged();
+        OpenSummary();
+    }
+
+    public void Pause(int? minutes)
+    {
+        if (!IsTracking || PauseUntil != null) return;
+        var now = DateTime.Now;
+        _pausedSince = now;
+        PauseUntil = minutes is int m ? now.AddMinutes(m) : DateTime.MaxValue;
+        _prompt.Close();
+        if ((now - _lastCovered).TotalSeconds > 60)
+        {
+            Show(new PromptRequest
+            {
+                Start = _lastCovered,
+                End = now,
+                Note = "Prije pauze — na čemu si radio?",
+                AllowSnooze = false
+            });
+        }
+        RaiseChanged();
+    }
+
+    public void Resume()
+    {
+        if (PauseUntil == null) return;
+        EndManualPause(DateTime.Now);
+    }
+
+    public void Snooze(int minutes)
+    {
+        _prompt.Close();
+        // Snap to the 5-min grid so periods (and durations) stay aligned.
+        var target = SnapToGrid(DateTime.Now.AddMinutes(minutes));
+        NextPromptAt = Max(target, DateTime.Now.AddSeconds(60));
+        RaiseChanged();
+    }
+
+    /// <summary>Nearest point on the 5-min grid (e.g. 10:17:40 → 10:20).</summary>
+    private static DateTime SnapToGrid(DateTime date)
+    {
+        var hourStart = HourStart(date);
+        const double step = 300;
+        double offset = Math.Round((date - hourStart).TotalSeconds / step) * step;
+        return hourStart.AddSeconds(offset);
+    }
+
+    /// <summary>Start of the grid block containing <paramref name="date"/> (e.g. 9:56 with step 900 → 9:45).</summary>
+    private static DateTime GridFloor(DateTime date, double step)
+    {
+        var hourStart = HourStart(date);
+        double elapsed = (date - hourStart).TotalSeconds;
+        return hourStart.AddSeconds(Math.Floor(elapsed / step) * step);
+    }
+
+    public void DeleteEntry(Guid id, string dayKey)
+    {
+        if (dayKey == CurrentDayKey)
+        {
+            Entries.RemoveAll(e => e.Id == id);
+            PersistDay();
+            RaiseChanged();
+        }
+        else
+        {
+            var day = Store.LoadDay(dayKey);
+            day.RemoveAll(e => e.Id == id);
+            Store.SaveDay(dayKey, day);
+            RaiseChanged();
+        }
+    }
+
+    /// <summary>Next prompt aligned to the hour (e.g. 15 min → :00, :15, :30, :45).
+    /// An interval that doesn't divide the hour (20, 45) resets each full hour.</summary>
+    private DateTime AlignedNextPrompt(DateTime date)
+    {
+        var hourStart = HourStart(date);
+        double elapsed = (date - hourStart).TotalSeconds;
+        var next = hourStart.AddSeconds((Math.Floor(elapsed / Interval) + 1) * Interval);
+        var nextHour = hourStart.AddSeconds(3600);
+        return Min(next, nextHour);
+    }
+
+    // MARK: - Tick loop
+
+    private void Tick()
+    {
+        if (!IsTracking) return;
+        var now = DateTime.Now;
+
+        if (PauseUntil is DateTime until)
+        {
+            if (now >= until) EndManualPause(now);
+            return;
+        }
+
+        if (AwaitingReturnSince is DateTime gapStart)
+        {
+            if (!_session.IsLocked && IdleMonitor.IdleSeconds() < 5)
+                HandleReturn(gapStart, now);
+            return;
+        }
+
+        if (_prompt.IsVisible) return;
+        if (NextPromptAt is DateTime next && now >= next)
+            AttemptPrompt(now);
+    }
+
+    private void AttemptPrompt(DateTime now)
+    {
+        double idle = IdleMonitor.IdleSeconds();
+        if (_session.IsLocked)
+        {
+            AwaitingReturnSince = Max(_session.LockedAt ?? now, _lastCovered);
+            RaiseChanged();
+        }
+        else if (Settings.IdleDetectionEnabled && idle >= Settings.IdleThresholdMinutes * 60.0)
+        {
+            AwaitingReturnSince = Max(now.AddSeconds(-idle), _lastCovered);
+            RaiseChanged();
+        }
+        else
+        {
+            // The period's end is the scheduled (aligned) prompt time, not the moment of
+            // answering — entries stay exactly on the 5-min grid and late answers spill
+            // into the next period.
+            Show(new PromptRequest
+            {
+                Start = _lastCovered,
+                End = NextPromptAt ?? now,
+                AllowSnooze = Settings.PromptStyle == PromptStyle.Floating
+            });
+        }
+    }
+
+    private void HandleReturn(DateTime gapStart, DateTime now)
+    {
+        AwaitingReturnSince = null;
+        int gapMinutes = Math.Max(1, (int)((now - gapStart).TotalSeconds / 60));
+
+        if ((gapStart - _lastCovered).TotalSeconds > 60)
+        {
+            Show(new PromptRequest
+            {
+                Start = _lastCovered,
+                End = gapStart,
+                PauseAfter = new PromptRequest.PendingPause(gapStart, "Pauza (odsutnost)"),
+                Note = $"Bio si odsutan ~{gapMinutes} min — to razdoblje bit će označeno kao pauza.",
+                AllowSnooze = false
+            });
+        }
+        else
+        {
+            if (now > gapStart)
+            {
+                Entries.Add(new Entry(Max(gapStart, _lastCovered), now, "Pauza (odsutnost)", EntryKind.Pause));
+                PersistDay();
+            }
+            _lastCovered = now;
+            NextPromptAt = AlignedNextPrompt(now);
+        }
+        RaiseChanged();
+    }
+
+    private void EndManualPause(DateTime now)
+    {
+        if (_pausedSince is DateTime since && now > since)
+            Entries.Add(new Entry(Max(since, _lastCovered), now, "Pauza", EntryKind.Pause));
+        _pausedSince = null;
+        PauseUntil = null;
+        _lastCovered = Max(_lastCovered, now);
+        NextPromptAt = AlignedNextPrompt(now);
+        PersistDay();
+        RaiseChanged();
+    }
+
+    // MARK: - Prompt
+
+    private void Show(PromptRequest request)
+    {
+        if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
+        _prompt.Show(
+            request,
+            Settings.PromptStyle,
+            History,
+            onSubmit: segments => HandleSubmit(request, segments),
+            onSnooze: () => Snooze(5));
+    }
+
+    private void HandleSubmit(PromptRequest request, IReadOnlyList<PromptSegment> segments)
+    {
+        var now = DateTime.Now;
+        var coveredEnd = request.Start;
+        foreach (var seg in segments)
+        {
+            if ((seg.End - seg.Start).TotalSeconds <= 5) continue;
+            Entries.Add(new Entry(seg.Start, seg.End, seg.Text, EntryKind.Work));
+            // Chronological order → last segment ends up as history[0] (prefill for the next prompt).
+            PushHistory(seg.Text);
+            coveredEnd = Max(coveredEnd, seg.End);
+        }
+        if (request.PauseAfter is PromptRequest.PendingPause pending && now > pending.Start)
+        {
+            Entries.Add(new Entry(pending.Start, now, pending.Reason, EntryKind.Pause));
+            _lastCovered = Max(_lastCovered, now);
+        }
+        else
+        {
+            _lastCovered = Max(_lastCovered, request.End ?? coveredEnd);
+        }
+        PersistDay();
+
+        if (request.IsFinal)
+        {
+            FinalizeStop();
+        }
+        else if (PauseUntil == null)
+        {
+            NextPromptAt = AlignedNextPrompt(Max(now, _lastCovered));
+            RaiseChanged();
+        }
+    }
+
+    private void PushHistory(string text)
+    {
+        string t = text.Trim();
+        if (t.Length == 0) return;
+        History.RemoveAll(h => h == t);
+        History.Insert(0, t);
+        if (History.Count > Settings.HistoryLimit)
+            History = History.Take(Settings.HistoryLimit).ToList();
+        Store.SaveHistory(History);
+    }
+
+    private void PersistDay()
+    {
+        Entries.Sort((a, b) => a.Start.CompareTo(b.Start));
+        Store.SaveDay(CurrentDayKey, Entries);
+    }
+
+    // MARK: - Settings
+
+    /// <summary>Mutate settings and persist — mirrors the Swift `settings` didSet.</summary>
+    public void MutateSettings(Action<AppSettings> mutate)
+    {
+        var old = Settings.Clone();
+        mutate(Settings);
+        Store.SaveSettings(Settings);
+        SettingsChanged(old);
+        RaiseChanged();
+    }
+
+    private void SettingsChanged(AppSettings old)
+    {
+        if (old.IntervalMinutes != Settings.IntervalMinutes && IsTracking && PauseUntil == null)
+            NextPromptAt = AlignedNextPrompt(DateTime.Now);
+
+        if (old.HistoryLimit != Settings.HistoryLimit && History.Count > Settings.HistoryLimit)
+        {
+            History = History.Take(Settings.HistoryLimit).ToList();
+            Store.SaveHistory(History);
+        }
+
+        if (old.LaunchAtLogin != Settings.LaunchAtLogin)
+            LaunchAtLoginStatus = LaunchAtLogin.Apply(Settings.LaunchAtLogin);
+    }
+
+    // MARK: - UI helpers
+
+    public TrayState State
+    {
+        get
+        {
+            if (!IsTracking) return TrayState.Idle;
+            if (PauseUntil != null) return TrayState.Paused;
+            if (AwaitingReturnSince != null) return TrayState.AwaitingReturn;
+            return TrayState.Tracking;
+        }
+    }
+
+    public string StatusText
+    {
+        get
+        {
+            if (!IsTracking) return "Nije pokrenuto";
+            if (PauseUntil is DateTime until)
+                return until == DateTime.MaxValue ? "Pauzirano do nastavka" : $"Pauzirano do {Fmt.Hhmm(until)}";
+            if (AwaitingReturnSince is DateTime since)
+                return $"Odsutan od {Fmt.Hhmm(since)} — čekam povratak";
+            return "Trackam";
+        }
+    }
+
+    /// <summary>SessionSwitch may arrive on a background thread — hop to the UI thread
+    /// before touching any UI-observing state.</summary>
+    private void OnSessionChanged()
+    {
+        if (_marshal.IsHandleCreated && _marshal.InvokeRequired)
+            _marshal.BeginInvoke(new Action(() => Changed?.Invoke()));
+        else
+            Changed?.Invoke();
+    }
+
+    private void RaiseChanged() => Changed?.Invoke();
+
+    private static DateTime HourStart(DateTime d) => new(d.Year, d.Month, d.Day, d.Hour, 0, 0, d.Kind);
+    private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
+    private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
+
+    public void Dispose()
+    {
+        _timer.Stop();
+        _timer.Dispose();
+        _session.Dispose();
+        _prompt.Close();
+        _marshal.Dispose();
+    }
+}
