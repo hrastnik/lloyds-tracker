@@ -67,7 +67,7 @@ internal sealed class PromptTextField : Control
                  | ControlStyles.ResizeRedraw, true);
         BackColor = Palette.Black;
 
-        int pad = big ? 14 : 10;
+        int pad = Brand.S(big ? 14 : 10);
         _fieldFill = fieldFill;
         _pad = pad;
         _box = new TextBox
@@ -131,7 +131,7 @@ internal sealed class PromptTextField : Control
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
-        _box.SetBounds(_pad, (Height - _box.Font.Height) / 2, Math.Max(10, Width - _pad * 2), _box.Font.Height);
+        _box.SetBounds(_pad, (Height - _box.Font.Height) / 2, Math.Max(Brand.S(10), Width - _pad * 2), _box.Font.Height);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -140,7 +140,7 @@ internal sealed class PromptTextField : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(BackColor);
         var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
-        using var path = Brand.RoundedRect(r, 10);
+        using var path = Brand.RoundedRect(r, Brand.Sf(10));
         using (var b = new SolidBrush(_fieldFill)) g.FillPath(b, path);
         using var pen = new Pen(Palette.Yellow.With(_focused ? 0.8 : 0.25), 1f);
         g.DrawPath(pen, path);
@@ -202,8 +202,8 @@ internal sealed class PromptForm : Form
         _texts[_periodStart] = Prefill;
 
         _big = style == PromptStyle.Fullscreen;
-        _pad = _big ? 28 : 18;
-        int cardWidth = _big ? 560 : 420;
+        _pad = Brand.S(_big ? 28 : 18);
+        int cardWidth = Brand.S(_big ? 560 : 420);
         _innerW = cardWidth - _pad * 2;
         _interior = _big ? Palette.White.OverBlack(0.04) : Palette.Black;
         _fieldFill = Palette.White.OverBlack(0.07);
@@ -265,12 +265,12 @@ internal sealed class PromptForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = _interior,
-            Margin = new Padding(0, 14, 0, 0),
+            Margin = new Padding(0, Brand.S(14), 0, 0),
             Width = _innerW,
         };
         AddRow(_segmentsPanel);
 
-        _hintsPanel = new Panel { Width = _innerW, BackColor = _interior, Margin = new Padding(0, 14, 0, 0) };
+        _hintsPanel = new Panel { Width = _innerW, BackColor = _interior, Margin = new Padding(0, Brand.S(14), 0, 0) };
         AddRow(_hintsPanel);
 
         RebuildSegmentsUI();
@@ -278,7 +278,7 @@ internal sealed class PromptForm : Form
 
     private void AddRow(Control c, bool first = false)
     {
-        c.Margin = new Padding(0, first ? 0 : 14, 0, 0);
+        c.Margin = new Padding(0, first ? 0 : Brand.S(14), 0, 0);
         if (c.Width == 0) c.Width = _innerW;
         _stack.Controls.Add(c);
     }
@@ -286,11 +286,11 @@ internal sealed class PromptForm : Form
     private Panel BuildHeaderRow()
     {
         var titleFont = Brand.Ui(_big ? 20f : 13f, FontStyle.Bold);
-        int h = Math.Max(titleFont.Height, 20);
+        int h = Math.Max(titleFont.Height, Brand.S(20));
         var row = new Panel { Width = _innerW, Height = h, BackColor = _interior };
 
-        var dot = new Dot { Color = Palette.Yellow, BackColor = _interior, Size = new Size(9, 9) };
-        dot.Location = new Point(0, (h - 9) / 2);
+        var dot = new Dot { Color = Palette.Yellow, BackColor = _interior, Size = new Size(Brand.S(9), Brand.S(9)) };
+        dot.Location = new Point(0, (h - Brand.S(9)) / 2);
         row.Controls.Add(dot);
 
         var title = new TrackedLabel
@@ -301,7 +301,7 @@ internal sealed class PromptForm : Form
             Tracking = 1.5f,
             BackColor = _interior,
         };
-        title.Location = new Point(dot.Right + 8, (h - title.Height) / 2);
+        title.Location = new Point(dot.Right + Brand.S(8), (h - title.Height) / 2);
         row.Controls.Add(title);
 
         var timeFont = Brand.Mono(_big ? 10.5f : 9f, FontStyle.Regular);
@@ -315,7 +315,7 @@ internal sealed class PromptForm : Form
             ForeColor = Palette.Gray,
             BackColor = _interior,
             TextAlign = ContentAlignment.MiddleRight,
-            Width = timeSize.Width + 4,
+            Width = timeSize.Width + Brand.S(4),
             Height = h,
         };
         timeLabel.Location = new Point(_innerW - timeLabel.Width, 0);
@@ -363,18 +363,18 @@ internal sealed class PromptForm : Form
             if (single)
             {
                 field.Width = _innerW;
-                field.Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : 8, 0, 0);
+                field.Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : Brand.S(8), 0, 0);
                 _segmentsPanel.Controls.Add(field);
             }
             else
             {
-                int labelW = _big ? 96 : 80;
+                int labelW = Brand.S(_big ? 96 : 80);
                 var rowPanel = new Panel
                 {
                     Width = _innerW,
                     Height = field.Height,
                     BackColor = _interior,
-                    Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : 8, 0, 0),
+                    Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : Brand.S(8), 0, 0),
                 };
                 var label = new Label
                 {
@@ -388,8 +388,8 @@ internal sealed class PromptForm : Form
                     TextAlign = ContentAlignment.MiddleLeft,
                     Location = new Point(0, 0),
                 };
-                field.Width = _innerW - labelW - 8;
-                field.Location = new Point(labelW + 8, 0);
+                field.Width = _innerW - labelW - Brand.S(8);
+                field.Location = new Point(labelW + Brand.S(8), 0);
                 rowPanel.Controls.Add(label);
                 rowPanel.Controls.Add(field);
                 _segmentsPanel.Controls.Add(rowPanel);
@@ -432,7 +432,7 @@ internal sealed class PromptForm : Form
             chip.Location = new Point(x, 0);
             _hintsPanel.Controls.Add(chip);
             chipH = Math.Max(chipH, chip.Height);
-            x += chip.Width + 4;
+            x += chip.Width + Brand.S(4);
 
             var lbl = new Label
             {
@@ -444,7 +444,7 @@ internal sealed class PromptForm : Form
             };
             lbl.Location = new Point(x, (chip.Height - lbl.Height) / 2);
             _hintsPanel.Controls.Add(lbl);
-            x += lbl.Width + 14;
+            x += lbl.Width + Brand.S(14);
         }
 
         AddHint("↑↓", "povijest");
@@ -457,7 +457,7 @@ internal sealed class PromptForm : Form
                 AddHint("✂", "razbij period");
         }
 
-        _hintsPanel.Height = Math.Max(chipH, 16);
+        _hintsPanel.Height = Math.Max(chipH, Brand.S(16));
 
         if (_request.AllowSnooze)
         {
@@ -470,7 +470,7 @@ internal sealed class PromptForm : Form
                 Align = ContentAlignment.MiddleRight,
                 BackColor = _interior,
                 Height = _hintsPanel.Height,
-                Width = 100,
+                Width = Brand.S(100),
             };
             snooze.Location = new Point(_innerW - snooze.Width, 0);
             snooze.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -600,8 +600,8 @@ internal sealed class PromptForm : Form
         _cardPanel.Controls.Add(_stack);
         Controls.Add(_cardPanel);
 
-        _logoRow = new Panel { BackColor = Palette.Black, Height = 26 };
-        var square = new Panel { BackColor = Palette.Yellow, Size = new Size(26, 26), Location = new Point(0, 0) };
+        _logoRow = new Panel { BackColor = Palette.Black, Height = Brand.S(26) };
+        var square = new Panel { BackColor = Palette.Yellow, Size = new Size(Brand.S(26), Brand.S(26)), Location = new Point(0, 0) };
         var word = new TrackedLabel
         {
             Text = "LLOYDS TRACKER",
@@ -610,10 +610,10 @@ internal sealed class PromptForm : Form
             Tracking = 3f,
             BackColor = Palette.Black,
         };
-        word.Location = new Point(square.Right + 8, (26 - word.Height) / 2);
+        word.Location = new Point(square.Right + Brand.S(8), (Brand.S(26) - word.Height) / 2);
         _logoRow.Controls.Add(square);
         _logoRow.Controls.Add(word);
-        _logoRow.Width = square.Width + 8 + word.Width;
+        _logoRow.Width = square.Width + Brand.S(8) + word.Width;
         Controls.Add(_logoRow);
 
         _fullscreenHint = new Label
@@ -644,13 +644,13 @@ internal sealed class PromptForm : Form
         if (_floatRight == 0)
         {
             var wa = Screen.PrimaryScreen!.WorkingArea;
-            _floatRight = wa.Right - 24;
-            _floatTop = wa.Top + 24;
+            _floatRight = wa.Right - Brand.S(24);
+            _floatTop = wa.Top + Brand.S(24);
         }
         Left = _floatRight - Width;
         Top = _floatTop;
 
-        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), 16));
+        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
     }
 
     private void LayoutFullscreen()
@@ -659,7 +659,7 @@ internal sealed class PromptForm : Form
 
         _cardPanel.Size = _stack.PreferredSize;
 
-        int spacing = 28;
+        int spacing = Brand.S(28);
         int totalH = _logoRow.Height + spacing + _cardPanel.Height + spacing + _fullscreenHint.Height;
         int y = (ClientSize.Height - totalH) / 2;
 
@@ -678,7 +678,7 @@ internal sealed class PromptForm : Form
             // Yellow hairline border on the floating panel.
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using var pen = new Pen(Palette.Yellow.With(0.35), 1f);
-            using var path = Brand.RoundedRect(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), 16);
+            using var path = Brand.RoundedRect(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), Brand.Sf(16));
             e.Graphics.DrawPath(pen, path);
         }
     }

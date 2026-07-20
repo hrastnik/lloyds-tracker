@@ -2,14 +2,10 @@
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="1.0.0.0" name="LloydsTracker.app" />
 
-  <!-- Per-monitor v2 DPI awareness so the floating/fullscreen prompt renders crisp
-       on scaled displays (matches the macOS NSHighResolutionCapable behavior). -->
-  <application xmlns="urn:schemas-microsoft-com:asm.v3">
-    <windowsSettings>
-      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
-      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
-    </windowsSettings>
-  </application>
+  <!-- DPI awareness is set from code (Program.SetHighDpiMode -> SystemAware), not here,
+       so it stays the single source of truth. The UI lays out in fixed 96-DPI pixels and
+       scales every dimension and font from the system DPI (Brand.Dpi / Brand.Scale), so
+       it renders at the right physical size AND crisply on scaled displays (125%/150%). -->
 
   <!-- Declare Windows 10/11 compatibility so SystemEvents and DPI APIs behave. -->
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

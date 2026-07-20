@@ -17,8 +17,8 @@ internal sealed class SettingsForm : Form
     {
         _engine = engine;
         Text = "Postavke";
-        ClientSize = new Size(460, 560);
-        MinimumSize = new Size(460, 300);
+        ClientSize = new Size(Brand.S(460), Brand.S(560));
+        MinimumSize = new Size(Brand.S(460), Brand.S(300));
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Palette.Black;
         Font = Brand.Ui(9.5f);
@@ -26,7 +26,7 @@ internal sealed class SettingsForm : Form
         _stack = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Palette.Black };
         Controls.Add(_stack);
 
-        _y = 16;
+        _y = Brand.S(16);
         BuildPromptSection();
         BuildIdleSection();
         BuildHistorySection();
@@ -84,7 +84,7 @@ internal sealed class SettingsForm : Form
             _launchStatus.Text = _engine.LaunchAtLoginStatus ?? "";
             _launchStatus.Visible = !string.IsNullOrEmpty(_launchStatus.Text);
         });
-        _launchStatus = new Label { AutoSize = false, Text = _engine.LaunchAtLoginStatus ?? "", ForeColor = Palette.Orange, BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(20, _y), Width = ClientSize.Width - 40 };
+        _launchStatus = new Label { AutoSize = false, Text = _engine.LaunchAtLoginStatus ?? "", ForeColor = Palette.Orange, BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
         _launchStatus.Height = MeasureWrap(_launchStatus.Text, _launchStatus.Font, _launchStatus.Width);
         _launchStatus.Visible = !string.IsNullOrEmpty(_launchStatus.Text);
         _stack.Controls.Add(_launchStatus);
@@ -99,27 +99,27 @@ internal sealed class SettingsForm : Form
     private void BuildDataSection()
     {
         SectionHeader("PODACI");
-        var label = new Label { AutoSize = true, Text = "Lokacija", ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(20, _y) };
+        var label = new Label { AutoSize = true, Text = "Lokacija", ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(Brand.S(20), _y) };
         _stack.Controls.Add(label);
-        _y += label.Height + 2;
+        _y += label.Height + Brand.S(2);
 
-        var path = new TextBox { ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Palette.White.OverBlack(0.06), ForeColor = Palette.Gray, Font = Brand.Mono(8f), Text = Store.Directory, Location = new Point(20, _y), Width = ClientSize.Width - 40, Multiline = true, Height = 34 };
+        var path = new TextBox { ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Palette.White.OverBlack(0.06), ForeColor = Palette.Gray, Font = Brand.Mono(8f), Text = Store.Directory, Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40), Multiline = true, Height = Brand.S(34) };
         _stack.Controls.Add(path);
-        _y += path.Height + 8;
+        _y += path.Height + Brand.S(8);
 
-        var open = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(190, 28), Location = new Point(20, _y) };
+        var open = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(190), Brand.S(28)), Location = new Point(Brand.S(20), _y) };
         open.Click += (_, _) => { try { System.Diagnostics.Process.Start("explorer.exe", Store.Directory); } catch { } };
         _stack.Controls.Add(open);
-        _y += open.Height + 16;
+        _y += open.Height + Brand.S(16);
     }
 
     // MARK: - Building blocks
 
     private void SectionHeader(string text)
     {
-        var label = new TrackedLabel { Text = text, Font = Brand.Ui(8.5f, FontStyle.Bold), ForeColor = Palette.Yellow, Tracking = 1.5f, BackColor = Palette.Black, Location = new Point(20, _y) };
+        var label = new TrackedLabel { Text = text, Font = Brand.Ui(8.5f, FontStyle.Bold), ForeColor = Palette.Yellow, Tracking = 1.5f, BackColor = Palette.Black, Location = new Point(Brand.S(20), _y) };
         _stack.Controls.Add(label);
-        _y += label.Height + 8;
+        _y += label.Height + Brand.S(8);
     }
 
     private ComboBox LabeledCombo(string label, int[] values, int current, string suffix, Action<int> onChange)
@@ -131,7 +131,7 @@ internal sealed class SettingsForm : Form
 
     private ComboBox LabeledComboRaw(string label, string[] items, int selectedIndex, Action<int> onChange)
     {
-        var lbl = new Label { AutoSize = false, Text = label, ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(20, _y + 4), Size = new Size(210, 22), TextAlign = ContentAlignment.MiddleLeft };
+        var lbl = new Label { AutoSize = false, Text = label, ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(Brand.S(20), _y + Brand.S(4)), Size = new Size(Brand.S(210), Brand.S(22)), TextAlign = ContentAlignment.MiddleLeft };
         _stack.Controls.Add(lbl);
 
         var combo = new ComboBox
@@ -142,8 +142,8 @@ internal sealed class SettingsForm : Form
             ForeColor = Palette.White,
             Font = Brand.Ui(9.5f),
             DrawMode = DrawMode.OwnerDrawFixed,
-            Location = new Point(236, _y),
-            Width = ClientSize.Width - 20 - 236,
+            Location = new Point(Brand.S(236), _y),
+            Width = ClientSize.Width - Brand.S(20) - Brand.S(236),
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
         };
         combo.Items.AddRange(items.Cast<object>().ToArray());
@@ -152,7 +152,7 @@ internal sealed class SettingsForm : Form
         combo.SelectedIndexChanged += (_, _) => { if (combo.SelectedIndex >= 0) onChange(combo.SelectedIndex); };
         _stack.Controls.Add(combo);
 
-        _y += 34;
+        _y += Brand.S(34);
         return combo;
     }
 
@@ -177,24 +177,24 @@ internal sealed class SettingsForm : Form
             ForeColor = Palette.White,
             BackColor = Palette.Black,
             Font = Brand.Ui(9.5f),
-            Location = new Point(20, _y),
+            Location = new Point(Brand.S(20), _y),
         };
         box.FlatAppearance.CheckedBackColor = Palette.Yellow;
         box.CheckedChanged += (_, _) => onChange(box.Checked);
         _stack.Controls.Add(box);
-        _y += box.Height + 8;
+        _y += box.Height + Brand.S(8);
     }
 
     private void Caption(string text)
     {
-        var label = new Label { AutoSize = false, Text = text, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(20, _y), Width = ClientSize.Width - 40 };
+        var label = new Label { AutoSize = false, Text = text, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
         label.Height = MeasureWrap(text, label.Font, label.Width);
         _stack.Controls.Add(label);
-        _y += label.Height + 4;
+        _y += label.Height + Brand.S(4);
     }
 
-    private void Gap(int px) => _y += px;
+    private void Gap(int px) => _y += Brand.S(px);
 
     private static int MeasureWrap(string text, Font font, int width)
-        => TextRenderer.MeasureText(text, font, new Size(width, int.MaxValue), TextFormatFlags.WordBreak).Height + 2;
+        => TextRenderer.MeasureText(text, font, new Size(width, int.MaxValue), TextFormatFlags.WordBreak).Height + Brand.S(2);
 }

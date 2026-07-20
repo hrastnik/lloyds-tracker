@@ -31,8 +31,8 @@ internal sealed class SummaryForm : Form
     {
         _engine = engine;
         Text = "Pregled dana";
-        MinimumSize = new Size(520, 440);
-        ClientSize = new Size(560, 520);
+        MinimumSize = new Size(Brand.S(520), Brand.S(440));
+        ClientSize = new Size(Brand.S(560), Brand.S(520));
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Palette.Black;
         Font = Brand.Ui(9f);
@@ -51,10 +51,10 @@ internal sealed class SummaryForm : Form
 
     private void BuildChrome()
     {
-        _footer = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = Palette.Black };
-        _footer.Controls.Add(new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Palette.White.OverBlack(0.15) });
-        _header = new Panel { Dock = DockStyle.Top, Height = 108, BackColor = Palette.Black };
-        _header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Palette.White.OverBlack(0.15) });
+        _footer = new Panel { Dock = DockStyle.Bottom, Height = Brand.S(52), BackColor = Palette.Black };
+        _footer.Controls.Add(new Panel { Dock = DockStyle.Top, Height = Brand.S(1), BackColor = Palette.White.OverBlack(0.15) });
+        _header = new Panel { Dock = DockStyle.Top, Height = Brand.S(108), BackColor = Palette.Black };
+        _header.Controls.Add(new Panel { Dock = DockStyle.Bottom, Height = Brand.S(1), BackColor = Palette.White.OverBlack(0.15) });
         _content = new Panel { Dock = DockStyle.Fill, BackColor = Palette.Black, AutoScroll = true };
 
         // Fill added first (lowest z-order → laid out last, takes remaining space);
@@ -70,21 +70,21 @@ internal sealed class SummaryForm : Form
 
     private void BuildHeader()
     {
-        var prev = new FlatButton { Text = "◀", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(30, 26), Location = new Point(16, 14) };
+        var prev = new FlatButton { Text = "◀", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(30), Brand.S(26)), Location = new Point(Brand.S(16), Brand.S(14)) };
         prev.Click += (_, _) => { _date = _date.AddDays(-1); Rebuild(); };
         _header.Controls.Add(prev);
 
-        _nextButton = new FlatButton { Text = "▶", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(30, 26) };
+        _nextButton = new FlatButton { Text = "▶", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(30), Brand.S(26)) };
         _nextButton.Click += (_, _) => { if (!IsToday()) { _date = _date.AddDays(1); Rebuild(); } };
         _nextButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _nextButton.Location = new Point(ClientSize.Width - 16 - 30, 14);
+        _nextButton.Location = new Point(ClientSize.Width - Brand.S(16) - Brand.S(30), Brand.S(14));
         _header.Controls.Add(_nextButton);
 
-        _dayLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Brand.Ui(11.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(52, 14), Size = new Size(ClientSize.Width - 104, 26), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        _dayLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Brand.Ui(11.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(Brand.S(52), Brand.S(14)), Size = new Size(ClientSize.Width - Brand.S(104), Brand.S(26)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         _header.Controls.Add(_dayLabel);
 
-        _workBadge = MakeBadge("RAD", Palette.Yellow, new Point(16, 56));
-        _pauseBadge = MakeBadge("PAUZE", Palette.Gray, new Point(0, 56));
+        _workBadge = MakeBadge("RAD", Palette.Yellow, new Point(Brand.S(16), Brand.S(56)));
+        _pauseBadge = MakeBadge("PAUZE", Palette.Gray, new Point(0, Brand.S(56)));
         _header.Controls.Add(_workBadge);
         _header.Controls.Add(_pauseBadge);
 
@@ -102,8 +102,8 @@ internal sealed class SummaryForm : Form
             Text = "",
             BackColor = Palette.White.OverBlack(0.06),
             Location = loc,
-            Size = new Size(120, 26),
-            Padding = new Padding(8, 0, 8, 0),
+            Size = new Size(Brand.S(120), Brand.S(26)),
+            Padding = new Padding(Brand.S(8), 0, Brand.S(8), 0),
             TextAlign = ContentAlignment.MiddleLeft,
             Tag = (label, color),
         };
@@ -124,7 +124,7 @@ internal sealed class SummaryForm : Form
             Font = Brand.Ui(9f, FontStyle.Bold),
             CornerRadius = 6,
             BackColor = Palette.Black,
-            Size = new Size(96, 26),
+            Size = new Size(Brand.S(96), Brand.S(26)),
         };
         tab.Click += (_, _) => { _mode = mode; Rebuild(); };
         return tab;
@@ -132,23 +132,23 @@ internal sealed class SummaryForm : Form
 
     private void PositionTabs()
     {
-        int right = ClientSize.Width - 16;
-        _chronoTab.Location = new Point(right - _chronoTab.Width, 56);
-        _groupedTab.Location = new Point(_chronoTab.Left - _groupedTab.Width - 2, 56);
+        int right = ClientSize.Width - Brand.S(16);
+        _chronoTab.Location = new Point(right - _chronoTab.Width, Brand.S(56));
+        _groupedTab.Location = new Point(_chronoTab.Left - _groupedTab.Width - Brand.S(2), Brand.S(56));
     }
 
     private void BuildFooter()
     {
-        _copyButton = new FlatButton { Text = "Kopiraj pregled", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(140, 28), Location = new Point(12, 12) };
+        _copyButton = new FlatButton { Text = "Kopiraj pregled", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(140), Brand.S(28)), Location = new Point(Brand.S(12), Brand.S(12)) };
         _copyButton.Click += (_, _) => CopyOverview();
         _footer.Controls.Add(_copyButton);
 
-        var csv = new FlatButton { Text = "Export CSV…", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(120, 28), Location = new Point(160, 12) };
+        var csv = new FlatButton { Text = "Export CSV…", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(120), Brand.S(28)), Location = new Point(Brand.S(160), Brand.S(12)) };
         csv.Click += (_, _) => ExportCsv();
         _footer.Controls.Add(csv);
 
-        var folder = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Gray, Font = Brand.Ui(9f), BackColor = Palette.Black, Size = new Size(180, 28), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        folder.Location = new Point(ClientSize.Width - 12 - folder.Width, 12);
+        var folder = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Gray, Font = Brand.Ui(9f), BackColor = Palette.Black, Size = new Size(Brand.S(180), Brand.S(28)), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        folder.Location = new Point(ClientSize.Width - Brand.S(12) - folder.Width, Brand.S(12));
         folder.Click += (_, _) => OpenDataFolder();
         _footer.Controls.Add(folder);
     }
@@ -161,7 +161,7 @@ internal sealed class SummaryForm : Form
         _nextButton.Enabled = !IsToday();
         RenderBadge(_workBadge, Fmt.Dur(Summarize.WorkTotal(Entries)));
         RenderBadge(_pauseBadge, Fmt.Dur(Summarize.PauseTotal(Entries)));
-        _pauseBadge.Location = new Point(_workBadge.Right + 8, 56);
+        _pauseBadge.Location = new Point(_workBadge.Right + Brand.S(8), Brand.S(56));
 
         bool grouped = _mode == ViewMode.Grouped;
         StyleTab(_groupedTab, grouped);
@@ -187,18 +187,18 @@ internal sealed class SummaryForm : Form
         _content.Controls.Clear();
 
         var entries = Entries;
-        int width = _content.ClientSize.Width - 32;
-        if (width < 40) { _content.ResumeLayout(true); return; }
+        int width = _content.ClientSize.Width - Brand.S(32);
+        if (width < Brand.S(40)) { _content.ResumeLayout(true); return; }
 
         if (entries.Count == 0)
         {
-            var empty = new Label { AutoSize = true, Text = "Nema unosa za ovaj dan.", ForeColor = Palette.Gray, BackColor = Palette.Black, Font = Brand.Ui(10f), Location = new Point(16, 24) };
+            var empty = new Label { AutoSize = true, Text = "Nema unosa za ovaj dan.", ForeColor = Palette.Gray, BackColor = Palette.Black, Font = Brand.Ui(10f), Location = new Point(Brand.S(16), Brand.S(24)) };
             _content.Controls.Add(empty);
             _content.ResumeLayout(true);
             return;
         }
 
-        int y = 16;
+        int y = Brand.S(16);
         if (_mode == ViewMode.Grouped)
         {
             foreach (var group in Summarize.Groups(entries))
@@ -214,44 +214,44 @@ internal sealed class SummaryForm : Form
 
     private int AddGroupRow(GroupSummary group, int y, int width)
     {
-        var row = new CardPanel { CardFill = Palette.White.OverBlack(0.04), BorderWidth = 0, Radius = 8, Location = new Point(16, y), Size = new Size(width, 52), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var row = new CardPanel { CardFill = Palette.White.OverBlack(0.04), BorderWidth = 0, Radius = 8, Location = new Point(Brand.S(16), y), Size = new Size(width, Brand.S(52)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
 
-        var dur = new Label { AutoSize = false, Text = Fmt.Dur(group.Total), Font = Brand.Mono(9.5f, FontStyle.Bold), ForeColor = Palette.Yellow, BackColor = row.CardFill, Location = new Point(10, 8), Size = new Size(70, 18), TextAlign = ContentAlignment.MiddleLeft };
+        var dur = new Label { AutoSize = false, Text = Fmt.Dur(group.Total), Font = Brand.Mono(9.5f, FontStyle.Bold), ForeColor = Palette.Yellow, BackColor = row.CardFill, Location = new Point(Brand.S(10), Brand.S(8)), Size = new Size(Brand.S(70), Brand.S(18)), TextAlign = ContentAlignment.MiddleLeft };
         row.Controls.Add(dur);
 
-        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = group.Text, Font = Brand.Ui(9.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = row.CardFill, Location = new Point(80, 8), Size = new Size(width - 90, 18), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = group.Text, Font = Brand.Ui(9.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = row.CardFill, Location = new Point(Brand.S(80), Brand.S(8)), Size = new Size(width - Brand.S(90), Brand.S(18)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         row.Controls.Add(text);
 
         string ranges = string.Join(" · ", group.Ranges.Select(r => $"{Fmt.Hhmm(r.Start)}–{Fmt.Hhmm(r.End)}"));
-        var rangesLabel = new Label { AutoSize = false, Text = ranges, Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(0.7), BackColor = row.CardFill, Location = new Point(80, 28), Size = new Size(width - 90, 16), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var rangesLabel = new Label { AutoSize = false, Text = ranges, Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(0.7), BackColor = row.CardFill, Location = new Point(Brand.S(80), Brand.S(28)), Size = new Size(width - Brand.S(90), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         row.Controls.Add(rangesLabel);
 
         _content.Controls.Add(row);
-        return y + 52 + 8;
+        return y + Brand.S(52) + Brand.S(8);
     }
 
     private int AddChronoRow(Entry entry, int y, int width)
     {
         bool pause = entry.Kind == EntryKind.Pause;
         var fill = Palette.White.OverBlack(0.03);
-        var row = new CardPanel { CardFill = fill, BorderWidth = 0, Radius = 6, Location = new Point(16, y), Size = new Size(width, 30), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var row = new CardPanel { CardFill = fill, BorderWidth = 0, Radius = 6, Location = new Point(Brand.S(16), y), Size = new Size(width, Brand.S(30)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
 
-        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8.5f), ForeColor = Palette.Gray, BackColor = fill, Location = new Point(10, 7) };
+        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8.5f), ForeColor = Palette.Gray, BackColor = fill, Location = new Point(Brand.S(10), Brand.S(7)) };
         row.Controls.Add(time);
 
-        var del = new FlatButton { Text = "✕", TextColor = Palette.Gray.With(0.6), Font = Brand.Ui(8f, FontStyle.Bold), BackColor = fill, Size = new Size(22, 22), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(width - 8 - 22, 4) };
+        var del = new FlatButton { Text = "✕", TextColor = Palette.Gray.With(0.6), Font = Brand.Ui(8f, FontStyle.Bold), BackColor = fill, Size = new Size(Brand.S(22), Brand.S(22)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(width - Brand.S(8) - Brand.S(22), Brand.S(4)) };
         del.Click += (_, _) => { _engine.DeleteEntry(entry.Id, DayKey); Rebuild(); };
         row.Controls.Add(del);
 
         var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8.5f), ForeColor = Palette.Gray.With(0.7), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        dur.Location = new Point(del.Left - 8 - dur.PreferredWidth, 7);
+        dur.Location = new Point(del.Left - Brand.S(8) - dur.PreferredWidth, Brand.S(7));
         row.Controls.Add(dur);
 
-        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(time.Right + 10, 7), Size = new Size(dur.Left - 8 - (time.Right + 10), 16), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(time.Right + Brand.S(10), Brand.S(7)), Size = new Size(dur.Left - Brand.S(8) - (time.Right + Brand.S(10)), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         row.Controls.Add(text);
 
         _content.Controls.Add(row);
-        return y + 30 + 6;
+        return y + Brand.S(30) + Brand.S(6);
     }
 
     // MARK: - Footer actions

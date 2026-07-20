@@ -55,10 +55,12 @@ internal static class PromptGeometry
 /// grid boundary, and a time-labels row. Mirrors PromptView.blockBar.</summary>
 internal sealed class BlockBarControl : Control
 {
-    private const int TrackHeight = 20;
-    private const int Gap = 3;
-    private const int LabelsHeight = 11;
-    private const float HandleRadius = 10f;
+    // Scaled from the 96-DPI design once at construction (Brand.Dpi is set at startup),
+    // so all the geometry math below inherits DPI scaling without further changes.
+    private readonly int TrackHeight = Brand.S(20);
+    private readonly int Gap = Brand.S(3);
+    private readonly int LabelsHeight = Brand.S(11);
+    private readonly float HandleRadius = Brand.Sf(10f);
 
     public DateTime PeriodStart { get; set; }
     public DateTime PeriodEnd { get; set; }
@@ -103,8 +105,8 @@ internal sealed class BlockBarControl : Control
             float sw = (float)((seg.End - seg.Start).TotalSeconds / Total) * Width;
             bool active = FocusedStart == seg.Start || segments.Count == 1;
             using var b = new SolidBrush(Palette.Yellow.OverBlack(active ? 0.85 : 0.4));
-            var rect = new RectangleF(x + 2, 0, Math.Max(6, sw - 4), TrackHeight);
-            using var path = Brand.RoundedRect(rect, 6);
+            var rect = new RectangleF(x + Brand.Sf(2), 0, Math.Max(Brand.Sf(6), sw - Brand.Sf(4)), TrackHeight);
+            using var path = Brand.RoundedRect(rect, Brand.Sf(6));
             g.FillPath(b, path);
         }
 
@@ -116,19 +118,19 @@ internal sealed class BlockBarControl : Control
             var center = new PointF(x, TrackHeight / 2f);
             var circle = new RectangleF(center.X - HandleRadius, center.Y - HandleRadius, HandleRadius * 2, HandleRadius * 2);
             using (var fill = new SolidBrush(Palette.Black)) g.FillEllipse(fill, circle);
-            using (var pen = new Pen(isSplit ? Palette.Yellow : Palette.White.With(0.35), 1f)) g.DrawEllipse(pen, circle);
+            using (var pen = new Pen(isSplit ? Palette.Yellow : Palette.White.With(0.35), Brand.Sf(1f))) g.DrawEllipse(pen, circle);
 
-            using var glyphPen = new Pen(isSplit ? Palette.Yellow : Palette.Gray, 1.4f);
+            using var glyphPen = new Pen(isSplit ? Palette.Yellow : Palette.Gray, Brand.Sf(1.4f));
             if (isSplit)
             {
                 // "×" — click to merge.
-                g.DrawLine(glyphPen, center.X - 3, center.Y - 3, center.X + 3, center.Y + 3);
-                g.DrawLine(glyphPen, center.X - 3, center.Y + 3, center.X + 3, center.Y - 3);
+                g.DrawLine(glyphPen, center.X - Brand.Sf(3), center.Y - Brand.Sf(3), center.X + Brand.Sf(3), center.Y + Brand.Sf(3));
+                g.DrawLine(glyphPen, center.X - Brand.Sf(3), center.Y + Brand.Sf(3), center.X + Brand.Sf(3), center.Y - Brand.Sf(3));
             }
             else
             {
                 // Cut tick — click to split here.
-                g.DrawLine(glyphPen, center.X, center.Y - 4, center.X, center.Y + 4);
+                g.DrawLine(glyphPen, center.X, center.Y - Brand.Sf(4), center.X, center.Y + Brand.Sf(4));
             }
         }
 
@@ -141,7 +143,7 @@ internal sealed class BlockBarControl : Control
             float x = XOf(b);
             bool isSplit = SplitPoints.Contains(b);
             using var brush = new SolidBrush(isSplit ? Palette.Yellow : Palette.Gray.OverBlack(0.55));
-            g.DrawString(Fmt.Hhmm(b), labelFont, brush, new RectangleF(x - 20, labelsTop, 40, LabelsHeight), sf);
+            g.DrawString(Fmt.Hhmm(b), labelFont, brush, new RectangleF(x - Brand.Sf(20), labelsTop, Brand.Sf(40), LabelsHeight), sf);
         }
     }
 
@@ -154,7 +156,7 @@ internal sealed class BlockBarControl : Control
         foreach (var b in Boundaries)
         {
             var center = new PointF(XOf(b), TrackHeight / 2f);
-            if (Dist(e.Location, center) <= HandleRadius + 2)
+            if (Dist(e.Location, center) <= HandleRadius + Brand.Sf(2))
             {
                 SplitToggled?.Invoke(b);
                 return;
@@ -182,7 +184,7 @@ internal sealed class BlockBarControl : Control
         foreach (var b in Boundaries)
         {
             var center = new PointF(XOf(b), TrackHeight / 2f);
-            if (Dist(e.Location, center) <= HandleRadius + 2)
+            if (Dist(e.Location, center) <= HandleRadius + Brand.Sf(2))
             {
                 string text = SplitPoints.Contains(b) ? "Spoji blokove" : $"Razdvoji u {Fmt.Hhmm(b)}";
                 if (_tip.GetToolTip(this) != text) _tip.SetToolTip(this, text);

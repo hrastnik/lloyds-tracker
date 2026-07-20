@@ -12,8 +12,25 @@ internal static class Brand
     public const string UiFamily = "Segoe UI";
     public const string MonoFamily = "Consolas";
 
-    public static Font Ui(float size, FontStyle style = FontStyle.Regular) => new(UiFamily, size, style, GraphicsUnit.Point);
-    public static Font Mono(float size, FontStyle style = FontStyle.Regular) => new(MonoFamily, size, style, GraphicsUnit.Point);
+    /// <summary>System DPI captured once at startup (96 = 100% scaling). Set from Program
+    /// before any UI is created. Every layout dimension and font is scaled from this so
+    /// the UI renders at the right physical size — crisply — on high-DPI displays.</summary>
+    public static int Dpi = 96;
+
+    /// <summary>96-DPI-design → device scale factor (1.0 at 100%, 1.5 at 150%).</summary>
+    public static float Scale => Dpi / 96f;
+
+    /// <summary>Scale a design (96-DPI) pixel measurement to the current DPI.</summary>
+    public static int S(int px) => (int)Math.Round(px * Scale);
+
+    /// <summary>Float variant of <see cref="S(int)"/> for pen widths, radii and offsets.</summary>
+    public static float Sf(float px) => px * Scale;
+
+    // Fonts are built in PIXEL units at the system DPI (point size → px at Dpi) so that
+    // text measurement (Font.Height, TextRenderer/Graphics.MeasureString) and rendering
+    // agree exactly at any DPI. Call sites keep passing the same point sizes.
+    public static Font Ui(float size, FontStyle style = FontStyle.Regular) => new(UiFamily, size * Dpi / 72f, style, GraphicsUnit.Pixel);
+    public static Font Mono(float size, FontStyle style = FontStyle.Regular) => new(MonoFamily, size * Dpi / 72f, style, GraphicsUnit.Pixel);
 
     public static GraphicsPath RoundedRect(RectangleF r, float radius)
     {
@@ -79,8 +96,9 @@ internal sealed class TrackedLabel : Control
         using var bmp = new Bitmap(1, 1);
         using var g = Graphics.FromImage(bmp);
         float w = 0;
+        float tracking = _tracking * Brand.Scale;
         foreach (char c in Text ?? "")
-            w += g.MeasureString(c.ToString(), Font, PointF.Empty, StringFormat.GenericTypographic).Width + _tracking;
+            w += g.MeasureString(c.ToString(), Font, PointF.Empty, StringFormat.GenericTypographic).Width + tracking;
         int h = Font.Height;
         Size = new Size((int)Math.Ceiling(Math.Max(0, w)), h);
     }
@@ -89,12 +107,13 @@ internal sealed class TrackedLabel : Control
     {
         Brand.EnableCrispText(e.Graphics);
         float x = 0;
+        float tracking = _tracking * Brand.Scale;
         using var brush = new SolidBrush(ForeColor);
         foreach (char c in Text ?? "")
         {
             string s = c.ToString();
             e.Graphics.DrawString(s, Font, brush, new PointF(x, 0), StringFormat.GenericTypographic);
-            x += e.Graphics.MeasureString(s, Font, PointF.Empty, StringFormat.GenericTypographic).Width + _tracking;
+            x += e.Graphics.MeasureString(s, Font, PointF.Empty, StringFormat.GenericTypographic).Width + tracking;
         }
     }
 }
@@ -135,7 +154,7 @@ internal sealed class FlatButton : Control
         g.Clear(BackColor);
 
         var r = new RectangleF(BorderWidth / 2f, BorderWidth / 2f, Width - BorderWidth, Height - BorderWidth);
-        using var path = Brand.RoundedRect(r, CornerRadius);
+        using var path = Brand.RoundedRect(r, Brand.Sf(CornerRadius));
 
         var fill = Fill;
         if (fill.A > 0)
@@ -155,12 +174,12 @@ internal sealed class FlatButton : Control
         var textColor = _hover && fill.A == 0 ? ControlPaint.Light(TextColor, 0.3f) : TextColor;
         var font = Font;
         SizeF textSize = string.IsNullOrEmpty(Text) ? SizeF.Empty : g.MeasureString(Text, font);
-        int glyphW = Glyph != null ? Glyph.Width + 6 : 0;
+        int glyphW = Glyph != null ? Glyph.Width + Brand.S(6) : 0;
         float totalW = textSize.Width + glyphW;
         float startX = Align switch
         {
-            ContentAlignment.MiddleLeft => 10,
-            ContentAlignment.MiddleRight => Width - totalW - 10,
+            ContentAlignment.MiddleLeft => Brand.S(10),
+            ContentAlignment.MiddleRight => Width - totalW - Brand.S(10),
             _ => (Width - totalW) / 2f
         };
         float y = (Height - Math.Max(textSize.Height, Glyph?.Height ?? 0)) / 2f;
@@ -230,7 +249,7 @@ internal sealed class KeyChip : Control
         ForeColor = fg;
         Font = Brand.Mono(7.5f, FontStyle.Bold);
         var sz = TextRenderer.MeasureText(text, Font);
-        Size = new Size(sz.Width + 10, sz.Height + 4);
+        Size = new Size(sz.Width + Brand.S(10), sz.Height + Brand.S(4));
     }
 
     public Color ChipColor { get; set; } = Palette.White.OverBlack(0.12);
@@ -242,7 +261,7 @@ internal sealed class KeyChip : Control
         Brand.EnableCrispText(g);
         g.Clear(BackColor);
         using (var b = new SolidBrush(ChipColor))
-        using (var path = Brand.RoundedRect(new RectangleF(0, 0, Width, Height), 4))
+        using (var path = Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(4)))
             g.FillPath(b, path);
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, ForeColor,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -271,7 +290,7 @@ internal sealed class CardPanel : Panel
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(BackColor);
         var r = new RectangleF(BorderWidth / 2f, BorderWidth / 2f, Width - BorderWidth, Height - BorderWidth);
-        using var path = Brand.RoundedRect(r, Radius);
+        using var path = Brand.RoundedRect(r, Brand.Sf(Radius));
         using (var b = new SolidBrush(CardFill)) g.FillPath(b, path);
         if (BorderWidth > 0)
         {

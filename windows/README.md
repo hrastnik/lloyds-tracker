@@ -12,8 +12,9 @@ grupirani pregled koji možeš kopirati ili exportati u CSV.
 
 - **C# / .NET 8 + WinForms** — najlakši od .NET UI stackova (tanki sloj nad Win32/GDI),
   najbrži boot i najmanja potrošnja memorije. Sistem tray (`NotifyIcon`) je ugrađen.
-- Build je jedan **self-contained, ReadyToRun, kompresirani `.exe`** — ne treba instalirati
-  .NET runtime na ciljno računalo.
+- Build je jedan **self-contained, kompresirani `.exe`** — ne treba instalirati .NET runtime
+  na ciljno računalo (Windows 11 ne dolazi s .NET 8 Desktop Runtimeom). ReadyToRun je
+  isključen da `.exe` bude što manji; jedina cijena je malo sporiji prvi start.
 
 ## Build i pokretanje
 
