@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -59,12 +60,14 @@ internal sealed class TrackedLabel : Control
         set { _tracking = value; Recalc(); Invalidate(); }
     }
 
+    [AllowNull]
     public override string Text
     {
         get => base.Text;
         set { base.Text = value; Recalc(); Invalidate(); }
     }
 
+    [AllowNull]
     public override Font Font
     {
         get => base.Font;

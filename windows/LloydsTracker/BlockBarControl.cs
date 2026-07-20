@@ -189,7 +189,7 @@ internal sealed class BlockBarControl : Control
                 return;
             }
         }
-        if (_tip.GetToolTip(this).Length > 0) _tip.SetToolTip(this, "");
+        if (!string.IsNullOrEmpty(_tip.GetToolTip(this))) _tip.SetToolTip(this, "");
     }
 
     private static float Dist(Point p, PointF c) => (float)Math.Sqrt(Math.Pow(p.X - c.X, 2) + Math.Pow(p.Y - c.Y, 2));
