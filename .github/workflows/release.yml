@@ -1,0 +1,41 @@
+name: Release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v1.0.0 && git push origin v1.0.0
+# This builds the Windows .exe and attaches it to a GitHub Release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish (version from tag)
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          dotnet publish windows/LloydsTracker/LloydsTracker.csproj -c Release -o windows/dist -p:Version=$ver
+
+      - name: Create GitHub Release with the .exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            "windows/dist/LloydsTracker.exe" `
+            --title "Lloyds Tracker ${{ github.ref_name }}" `
+            --generate-notes
