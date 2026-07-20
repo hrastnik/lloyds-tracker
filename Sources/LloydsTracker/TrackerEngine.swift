@@ -27,6 +27,7 @@ final class TrackerEngine: ObservableObject {
     private var lockedAt: Date?
     private var timer: Timer?
     private let prompt = PromptController()
+    private let startupReminder = StartupReminderController()
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
@@ -56,6 +57,22 @@ final class TrackerEngine: ObservableObject {
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+
+        // Kratki delay da se app slegne (menu bar ikona, ekrani) prije pop-upa.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            Task { @MainActor in self?.showStartupReminderIfNeeded() }
+        }
+    }
+
+    /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama i
+    /// dan još nije pokrenut (da se ne zaboravi startati tracking).
+    func showStartupReminderIfNeeded() {
+        guard settings.showStartupReminder, !isTracking, !prompt.isVisible else { return }
+        startupReminder.show(
+            dayTitle: Fmt.dayTitle.string(from: Date()),
+            onStart: { [weak self] in self?.start() },
+            onDismiss: {}
+        )
     }
 
     // MARK: - Kontrole

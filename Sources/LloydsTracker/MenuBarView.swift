@@ -77,6 +77,8 @@ struct MenuBarView: View {
                             Button("Do nastavka") { engine.pause(minutes: nil) }
                         } label: {
                             Label("Pauziraj", systemImage: "pause.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color.lloydsGray)
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
@@ -84,17 +86,18 @@ struct MenuBarView: View {
                         Button {
                             engine.resume()
                         } label: {
-                            Label("Nastavi", systemImage: "play.fill")
+                            pillLabel("Nastavi", systemImage: "play.fill", color: .lloydsYellow)
                         }
+                        .buttonStyle(.plain)
                     }
                     Spacer()
-                    Button(role: .destructive) {
+                    Button {
                         engine.stop()
                     } label: {
-                        Label("Završi dan", systemImage: "stop.fill")
+                        pillLabel("Završi dan", systemImage: "stop.fill", color: stopRed)
                     }
+                    .buttonStyle(.plain)
                 }
-                .controlSize(.small)
             } else {
                 Button {
                     engine.start()
@@ -114,6 +117,30 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private let stopRed = Color(red: 1.0, green: 0.36, blue: 0.31)
+
+    /// Vidljivi "pill" gumb za crnu pozadinu — default macOS button style se ovdje
+    /// renderira kao prazna crna ploha, pa gumbe stiliziramo ručno.
+    private func pillLabel(_ title: String, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .bold))
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(color.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(color.opacity(0.5), lineWidth: 1)
+                )
+        )
     }
 
     private var statusColor: Color {

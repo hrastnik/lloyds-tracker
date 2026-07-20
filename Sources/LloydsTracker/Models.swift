@@ -37,6 +37,7 @@ struct AppSettings: Codable, Equatable {
     var idleThresholdMinutes: Int = 5
     var historyLimit: Int = 15
     var launchAtLogin: Bool = false
+    var showStartupReminder: Bool = true
 }
 
 /// Jedan blok (ili spojeni niz blokova) unutar prompt perioda, s pripadajućim opisom.
