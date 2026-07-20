@@ -28,7 +28,7 @@ jobs:
       - name: Restore
         run: dotnet restore windows/LloydsTracker/LloydsTracker.csproj
 
-      - name: Publish (self-contained single-file win-x64)
+      - name: Publish (framework-dependent single-file win-x64)
         run: dotnet publish windows/LloydsTracker/LloydsTracker.csproj -c Release --no-restore -o windows/dist
 
       - name: Upload LloydsTracker.exe

@@ -16,24 +16,24 @@
     <Product>Lloyds Tracker</Product>
     <AssemblyTitle>Lloyds Tracker</AssemblyTitle>
 
-    <!-- Small footprint, no runtime install needed: one self-contained, compressed .exe.
-         Windows 11 does NOT ship the .NET 8 Desktop Runtime (only .NET Framework 4.x is
-         built in), so self-contained is what keeps this double-click-to-run everywhere.
+    <!-- Framework-dependent, single-file .exe — a small (~2-3 MB) binary. The .NET runtime
+         (incl. WinForms + ICU) comes from the target PC, not the bundle, so the target needs
+         the .NET 8 Desktop Runtime installed once:
+             winget install Microsoft.DotNet.DesktopRuntime.8
+         (Windows 11 doesn't ship it; the apphost shows a download prompt if it's missing.)
 
-         ReadyToRun is intentionally OFF: its precompiled native images are the single
-         biggest chunk of the bundle and compress poorly — dropping them shrinks the .exe
-         by roughly a third to a half. The only cost is slightly slower first-run JIT,
-         which is a non-issue for a tray app that launches once at login.
+         Self-contained was the zero-install alternative but floored at ~59 MB — it bundles
+         the whole runtime, and trimming (the only way to shrink that) isn't safe for
+         WinForms + reflection-based System.Text.Json. So: framework-dependent for size.
 
-         Trimming is intentionally OFF: the storage layer uses reflection-based
-         System.Text.Json (which the trimmer can silently break) and WinForms itself is
-         not trim-compatible. InvariantGlobalization is OFF because we need the Croatian
-         (hr-HR) culture for date formatting. -->
-    <SelfContained>true</SelfContained>
+         A RuntimeIdentifier is required for single-file publish. ReadyToRun precompiles the
+         (tiny) app assemblies for a snappy start. InvariantGlobalization stays OFF so the
+         Croatian (hr-HR) culture works — its data is provided by the installed runtime.
+         (EnableCompressionInSingleFile is omitted: it only applies to self-contained.) -->
+    <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishSingleFile>true</PublishSingleFile>
-    <PublishReadyToRun>false</PublishReadyToRun>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <PublishReadyToRun>true</PublishReadyToRun>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>

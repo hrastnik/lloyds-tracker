@@ -1,5 +1,6 @@
-# Publishes a trimmed, self-contained single-file LloydsTracker.exe into windows/dist.
-# Requires the .NET 8 SDK on Windows (https://dotnet.microsoft.com/download).
+# Publishes a small framework-dependent single-file LloydsTracker.exe into windows/dist.
+# Building requires the .NET 8 SDK; running requires the .NET 8 Desktop Runtime
+# (winget install Microsoft.DotNet.DesktopRuntime.8). See https://dotnet.microsoft.com/download.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
