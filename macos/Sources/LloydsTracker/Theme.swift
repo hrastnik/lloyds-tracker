@@ -9,6 +9,7 @@ extension Color {
 
 extension NSColor {
     static let lloydsBlack = NSColor(red: 0x07 / 255, green: 0x07 / 255, blue: 0x07 / 255, alpha: 1)
+    static let lloydsYellow = NSColor(red: 0xFB / 255, green: 0xDE / 255, blue: 0x07 / 255, alpha: 1)
 }
 
 enum Fmt {
