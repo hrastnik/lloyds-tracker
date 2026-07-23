@@ -55,7 +55,7 @@ internal sealed class SettingsForm : Form
     private void BuildIdleSection()
     {
         SectionHeader("ODSUTNOST");
-        Toggle("Detekcija odsutnosti", _engine.Settings.IdleDetectionEnabled, v =>
+        Toggle("Detekcija neaktivnosti (tipkovnica/miš)", _engine.Settings.IdleDetectionEnabled, v =>
         {
             _engine.MutateSettings(s => s.IdleDetectionEnabled = v);
             _idleThreshold.Enabled = v;
@@ -63,7 +63,9 @@ internal sealed class SettingsForm : Form
         _idleThreshold = LabeledCombo("Prag neaktivnosti", new[] { 3, 5, 10, 15 }, _engine.Settings.IdleThresholdMinutes, " min",
             v => _engine.MutateSettings(s => s.IdleThresholdMinutes = v));
         _idleThreshold.Enabled = _engine.Settings.IdleDetectionEnabled;
-        Caption("Ako je računalo zaključano ili nema aktivnosti dulje od praga, prompt se odgađa dok se ne vratiš, a odsutnost se bilježi kao pauza.");
+        Toggle("Bilježi pauzu kad je ekran zaključan", _engine.Settings.LockPauseEnabled,
+            v => _engine.MutateSettings(s => s.LockPauseEnabled = v));
+        Caption("Kad je uključeno, razdoblje bez aktivnosti (dulje od praga) odnosno sa zaključanim ekranom bilježi se kao pauza, a prompt se odgađa dok se ne vratiš. Ako je oboje isključeno, prompt te samo pita što si radio u tom periodu.");
         Gap(8);
     }
 

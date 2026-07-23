@@ -27,9 +27,14 @@ Zahtjevi: macOS 14+, Xcode toolchain (Swift 6).
 3. **Pauziraj** (15/30/60 min ili do nastavka) — bez promptanja, vrijeme se bilježi kao pauza.
 4. **Završi dan** → otvara se pregled dana s grupiranim vremenima, *Kopiraj pregled* ili *Export CSV*.
 
-### Detekcija odsutnosti
+### Odsutnost
 
-Ako je ekran zaključan ili nema aktivnosti dulje od praga (default 5 min), prompt se odgađa dok se ne vratiš. Po povratku te pita što si radio **prije** odsutnosti, a sama odsutnost se automatski bilježi kao pauza — podaci ti tako ne lažu.
+Dvije neovisne opcije, **obje po defaultu isključene**:
+
+- **Detekcija neaktivnosti (tipkovnica/miš)** — nema inputa dulje od praga (default 5 min).
+- **Bilježi pauzu kad je ekran zaključan** — ekran je zaključan.
+
+Kad je opcija uključena, prompt se odgađa dok se ne vratiš; po povratku te pita što si radio **prije** odsutnosti, a samo razdoblje odsutnosti se bilježi kao pauza. Ako su obje isključene, prompt te u zakazano vrijeme samo pita što si radio.
 
 ## Postavke
 
@@ -40,7 +45,8 @@ Status bar ikona → *Postavke…*
 | Interval promptanja | 15 min (5–60) |
 | Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
 | Zvuk kod prompta | uključen |
-| Detekcija odsutnosti + prag | uključena, 5 min |
+| Detekcija neaktivnosti (tipkovnica/miš) + prag | isključena, 5 min |
+| Bilježi pauzu kad je ekran zaključan | isključeno |
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave | isključeno (zahtijeva .app u /Applications) |
 

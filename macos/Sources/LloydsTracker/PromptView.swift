@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PromptView: View {
     let request: PromptRequest
+    @ObservedObject var model: PromptModel
     let style: PromptStyle
     let history: [String]
     let onSubmit: ([PromptSegment]) -> Void
@@ -15,10 +16,11 @@ struct PromptView: View {
         var id: Date { start }
     }
 
-    private let periodStart: Date
-    private let periodEnd: Date
+    private var periodStart: Date { model.start }
+    /// Kraj perioda se uživo produžuje dok prompt čeka odgovor (skupno vrijeme).
+    private var periodEnd: Date { max(model.end, model.start) }
     /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti.
-    private let boundaries: [Date]
+    private var boundaries: [Date] { Self.gridBoundaries(from: periodStart, to: periodEnd) }
 
     @State private var splitPoints: Set<Date> = []
     /// Tekst po segmentu, ključ = početak segmenta. Preživljava spajanje/razdvajanje.
@@ -29,6 +31,7 @@ struct PromptView: View {
 
     init(
         request: PromptRequest,
+        model: PromptModel,
         style: PromptStyle,
         history: [String],
         onSubmit: @escaping ([PromptSegment]) -> Void,
@@ -36,17 +39,13 @@ struct PromptView: View {
         onLayoutChange: @escaping () -> Void = {}
     ) {
         self.request = request
+        self.model = model
         self.style = style
         self.history = history
         self.onSubmit = onSubmit
         self.onSnooze = onSnooze
         self.onLayoutChange = onLayoutChange
-        let start = request.start
-        let end = max(request.end ?? Date(), start)
-        self.periodStart = start
-        self.periodEnd = end
-        self.boundaries = Self.gridBoundaries(from: start, to: end)
-        _texts = State(initialValue: [start: history.first ?? ""])
+        _texts = State(initialValue: [model.start: history.first ?? ""])
     }
 
     private var prefill: String { history.first ?? "" }

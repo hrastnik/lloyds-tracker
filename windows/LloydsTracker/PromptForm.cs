@@ -31,6 +31,12 @@ internal sealed class PromptController
         form.Activate();
     }
 
+    /// <summary>Produži vidljivi prompt do nove granice (skupno vrijeme).</summary>
+    public void Extend(DateTime end)
+    {
+        if (_form is { IsDisposed: false } f) f.Extend(end);
+    }
+
     public void Close()
     {
         if (_form is { IsDisposed: false } f)
@@ -156,8 +162,9 @@ internal sealed class PromptForm : Form
     private readonly Action _onSnooze;
 
     private readonly DateTime _periodStart;
-    private readonly DateTime _periodEnd;
-    private readonly List<DateTime> _boundaries;
+    /// <summary>Kraj perioda se uživo produžuje dok prompt čeka odgovor (skupno vrijeme).</summary>
+    private DateTime _periodEnd;
+    private List<DateTime> _boundaries;
     private readonly HashSet<DateTime> _splitPoints = new();
     private readonly Dictionary<DateTime, string> _texts = new();
     private readonly Dictionary<DateTime, string> _drafts = new();
@@ -173,6 +180,7 @@ internal sealed class PromptForm : Form
     private FlowLayoutPanel _segmentsPanel = null!;
     private Panel _hintsPanel = null!;
     private BlockBarControl? _blockBar;
+    private Label? _timeLabel;
     private CardPanel? _cardPanel;    // fullscreen only
     private Panel? _logoRow;          // fullscreen only
     private Label? _fullscreenHint;   // fullscreen only
@@ -307,7 +315,7 @@ internal sealed class PromptForm : Form
         var timeFont = Brand.Mono(_big ? 10.5f : 9f, FontStyle.Regular);
         var timeText = $"{Fmt.Hhmm(_periodStart)} – {Fmt.Hhmm(_periodEnd)}";
         var timeSize = TextRenderer.MeasureText(timeText, timeFont);
-        var timeLabel = new Label
+        _timeLabel = new Label
         {
             AutoSize = false,
             Text = timeText,
@@ -318,9 +326,9 @@ internal sealed class PromptForm : Form
             Width = timeSize.Width + Brand.S(4),
             Height = h,
         };
-        timeLabel.Location = new Point(_innerW - timeLabel.Width, 0);
-        timeLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        row.Controls.Add(timeLabel);
+        _timeLabel.Location = new Point(_innerW - _timeLabel.Width, 0);
+        _timeLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        row.Controls.Add(_timeLabel);
 
         return row;
     }
@@ -688,6 +696,61 @@ internal sealed class PromptForm : Form
         base.OnShown(e);
         Relayout();
         BeginInvoke(new Action(() => FocusFieldAt(_periodStart)));
+    }
+
+    // MARK: - Produženje perioda
+
+    /// <summary>Produži period do nove granice (skupno vrijeme) bez zatvaranja prozora —
+    /// upisani tekst i podjele ostaju. Zrcali macOS PromptController.extend.</summary>
+    public void Extend(DateTime end)
+    {
+        var newEnd = Max(end, _periodStart);
+        if (newEnd <= _periodEnd) return;
+
+        SyncTextsFromFields();
+        // Zadrži fokus na istom polju nakon rebuilda — ali samo ako je prompt trenutno
+        // fokusiran (da produženje ne otima fokus dok si u drugoj aplikaciji).
+        DateTime? refocusKey = ContainsFocus
+            ? (_fields.FirstOrDefault(f => f.ContainsFocus)?.Key ?? _periodStart)
+            : null;
+        _periodEnd = newEnd;
+        _boundaries = PromptGeometry.GridBoundaries(_periodStart, _periodEnd);
+
+        if (_timeLabel != null)
+        {
+            _timeLabel.Text = $"{Fmt.Hhmm(_periodStart)} – {Fmt.Hhmm(_periodEnd)}";
+            var sz = TextRenderer.MeasureText(_timeLabel.Text, _timeLabel.Font);
+            _timeLabel.Width = sz.Width + Brand.S(4);
+            _timeLabel.Location = new Point(_innerW - _timeLabel.Width, 0);
+        }
+
+        if (_blockBar != null)
+        {
+            _blockBar.PeriodEnd = _periodEnd;
+            _blockBar.Boundaries = _boundaries;
+            _blockBar.Invalidate();
+        }
+        else if (_boundaries.Count > 0)
+        {
+            // Period je prešao prag za mrežu blokova — dodaj traku prije segmenata.
+            _blockBar = new BlockBarControl
+            {
+                Width = _innerW,
+                PeriodStart = _periodStart,
+                PeriodEnd = _periodEnd,
+                Boundaries = _boundaries,
+                SplitPoints = _splitPoints,
+                BackColor = _interior,
+                Margin = new Padding(0, Brand.S(14), 0, 0),
+            };
+            _blockBar.SplitToggled += ToggleSplit;
+            _blockBar.SegmentFocused += FocusFieldAt;
+            _stack.Controls.Add(_blockBar);
+            _stack.Controls.SetChildIndex(_blockBar, _stack.Controls.IndexOf(_segmentsPanel));
+        }
+
+        RebuildSegmentsUI();
+        if (refocusKey is DateTime rk) FocusFieldAt(rk);
     }
 
     private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;

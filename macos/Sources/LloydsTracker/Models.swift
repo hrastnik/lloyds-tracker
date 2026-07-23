@@ -33,11 +33,32 @@ struct AppSettings: Codable, Equatable {
     var intervalMinutes: Int = 15
     var promptStyle: PromptStyle = .floating
     var soundEnabled: Bool = true
-    var idleDetectionEnabled: Bool = true
+    /// Neaktivnost tipkovnice/miša dulje od praga → razdoblje se bilježi kao pauza.
+    var idleDetectionEnabled: Bool = false
     var idleThresholdMinutes: Int = 5
+    /// Zaključan ekran → razdoblje odsutnosti se bilježi kao pauza.
+    var lockPauseEnabled: Bool = false
     var historyLimit: Int = 15
     var launchAtLogin: Bool = false
     var showStartupReminder: Bool = true
+
+    init() {}
+
+    /// Ručni decode s `decodeIfPresent` da stari `settings.json` (bez novih ključeva)
+    /// ne padne cijeli na default — nedostajuća polja samo preuzmu svoj default.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettings()
+        intervalMinutes = try c.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? d.intervalMinutes
+        promptStyle = try c.decodeIfPresent(PromptStyle.self, forKey: .promptStyle) ?? d.promptStyle
+        soundEnabled = try c.decodeIfPresent(Bool.self, forKey: .soundEnabled) ?? d.soundEnabled
+        idleDetectionEnabled = try c.decodeIfPresent(Bool.self, forKey: .idleDetectionEnabled) ?? d.idleDetectionEnabled
+        idleThresholdMinutes = try c.decodeIfPresent(Int.self, forKey: .idleThresholdMinutes) ?? d.idleThresholdMinutes
+        lockPauseEnabled = try c.decodeIfPresent(Bool.self, forKey: .lockPauseEnabled) ?? d.lockPauseEnabled
+        historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit) ?? d.historyLimit
+        launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
+        showStartupReminder = try c.decodeIfPresent(Bool.self, forKey: .showStartupReminder) ?? d.showStartupReminder
+    }
 }
 
 /// Jedan blok (ili spojeni niz blokova) unutar prompt perioda, s pripadajućim opisom.

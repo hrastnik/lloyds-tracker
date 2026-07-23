@@ -22,6 +22,9 @@ final class TrackerEngine: ObservableObject {
     private(set) var currentDayKey: String
     private var sessionStart: Date?
     private var lastCovered = Date()
+    /// Kraj perioda vidljivog "običnog" prompta; produžuje se dok čeka odgovor.
+    /// nil znači da nema prompta koji se smije produžiti (npr. pauza/kraj dana).
+    private var activePromptEnd: Date?
     private var pausedSince: Date?
     private var isLocked = false
     private var lockedAt: Date?
@@ -95,6 +98,7 @@ final class TrackerEngine: ObservableObject {
         pauseUntil = nil
         pausedSince = nil
         awaitingReturnSince = nil
+        activePromptEnd = nil
         nextPromptAt = alignedNextPrompt(after: now)
         isTracking = true
     }
@@ -106,6 +110,7 @@ final class TrackerEngine: ObservableObject {
             endManualPause(at: now)
         }
         prompt.close()
+        activePromptEnd = nil
         if now.timeIntervalSince(lastCovered) > 60 {
             show(PromptRequest(
                 start: lastCovered,
@@ -138,6 +143,7 @@ final class TrackerEngine: ObservableObject {
             pauseUntil = .distantFuture // do kraja dana / dok se ručno ne nastavi
         }
         prompt.close()
+        activePromptEnd = nil
         if now.timeIntervalSince(lastCovered) > 60 {
             show(PromptRequest(
                 start: lastCovered,
@@ -155,6 +161,7 @@ final class TrackerEngine: ObservableObject {
 
     func snooze(minutes: Int) {
         prompt.close()
+        activePromptEnd = nil
         // Zaokruži na 5-min mrežu da periodi (i trajanja) ostanu poravnati.
         let target = Self.snapToGrid(Date().addingTimeInterval(TimeInterval(minutes * 60)))
         nextPromptAt = max(target, Date().addingTimeInterval(60))
@@ -219,7 +226,14 @@ final class TrackerEngine: ObservableObject {
             return
         }
 
-        guard !prompt.isVisible else { return }
+        if prompt.isVisible {
+            // Neodgovoren prompt "preživio" je granicu intervala — ne otvaramo drugi
+            // prompt, nego produžimo period na postojećem (skupno vrijeme).
+            if let next = nextPromptAt, now >= next, activePromptEnd != nil {
+                extendActivePrompt(to: next)
+            }
+            return
+        }
         if let next = nextPromptAt, now >= next {
             attemptPrompt(now: now)
         }
@@ -227,7 +241,7 @@ final class TrackerEngine: ObservableObject {
 
     private func attemptPrompt(now: Date) {
         let idle = IdleMonitor.idleSeconds()
-        if isLocked {
+        if settings.lockPauseEnabled && isLocked {
             awaitingReturnSince = max(lockedAt ?? now, lastCovered)
         } else if settings.idleDetectionEnabled && idle >= TimeInterval(settings.idleThresholdMinutes * 60) {
             awaitingReturnSince = max(now.addingTimeInterval(-idle), lastCovered)
@@ -235,12 +249,23 @@ final class TrackerEngine: ObservableObject {
             // Kraj perioda je zakazano (poravnato) vrijeme prompta, ne trenutak odgovora —
             // tako su unosi uvijek točno na 5-min mreži, a kašnjenje odgovora se
             // prelijeva u sljedeći period.
+            let end = nextPromptAt ?? now
+            activePromptEnd = end
             show(PromptRequest(
                 start: lastCovered,
-                end: nextPromptAt ?? now,
+                end: end,
                 allowSnooze: settings.promptStyle == .floating
             ))
+            // Iduća granica na kojoj će se ovaj prompt produžiti (a ne otvoriti novi).
+            nextPromptAt = alignedNextPrompt(after: end)
         }
+    }
+
+    /// Produži vidljivi prompt do nove granice intervala i pomakni sljedeću granicu.
+    private func extendActivePrompt(to boundary: Date) {
+        activePromptEnd = boundary
+        prompt.extend(to: boundary)
+        nextPromptAt = alignedNextPrompt(after: boundary)
     }
 
     private func handleReturn(gapStart: Date, now: Date) {
@@ -295,6 +320,9 @@ final class TrackerEngine: ObservableObject {
 
     private func handleSubmit(_ request: PromptRequest, segments: [PromptSegment]) {
         let now = Date()
+        // Produženi kraj (ako je prompt čekao preko granica) ima prednost nad izvornim.
+        let effectiveEnd = activePromptEnd ?? request.end
+        activePromptEnd = nil
         var coveredEnd = request.start
         for seg in segments where seg.end.timeIntervalSince(seg.start) > 5 {
             entries.append(Entry(start: seg.start, end: seg.end, text: seg.text, kind: .work))
@@ -306,7 +334,7 @@ final class TrackerEngine: ObservableObject {
             entries.append(Entry(start: pending.start, end: now, text: pending.reason, kind: .pause))
             lastCovered = max(lastCovered, now)
         } else {
-            lastCovered = max(lastCovered, request.end ?? coveredEnd)
+            lastCovered = max(lastCovered, effectiveEnd ?? coveredEnd)
         }
         persistDay()
 

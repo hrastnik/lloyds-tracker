@@ -11,9 +11,23 @@ final class KeyableWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+/// Promjenjivo stanje perioda dok je prompt vidljiv. Kad neodgovoren prompt "preživi"
+/// granicu intervala, produžimo `end` (skupno vrijeme) umjesto da otvaramo novi prompt.
+@MainActor
+final class PromptModel: ObservableObject {
+    let start: Date
+    @Published var end: Date
+
+    init(start: Date, end: Date) {
+        self.start = start
+        self.end = max(end, start)
+    }
+}
+
 @MainActor
 final class PromptController {
     private var window: NSWindow?
+    private var model: PromptModel?
 
     var isVisible: Bool { window != nil }
 
@@ -26,8 +40,12 @@ final class PromptController {
     ) {
         guard window == nil else { return }
 
+        let model = PromptModel(start: request.start, end: request.end ?? Date())
+        self.model = model
+
         let view = PromptView(
             request: request,
+            model: model,
             style: style,
             history: history,
             onSubmit: { [weak self] segments in
@@ -102,8 +120,18 @@ final class PromptController {
         panel.setFrame(frame, display: true, animate: false)
     }
 
+    /// Produži period vidljivog prompta do nove granice (skupno vrijeme). Bez treptanja —
+    /// samo se ažurira model, a upisani tekst i podjele ostaju.
+    func extend(to end: Date) {
+        guard let model else { return }
+        model.end = max(end, model.start)
+        // Nove granice mogu promijeniti visinu — poravnaj floating panel.
+        DispatchQueue.main.async { [weak self] in self?.resizeFloatingToFit() }
+    }
+
     func close() {
         window?.orderOut(nil)
         window = nil
+        model = nil
     }
 }

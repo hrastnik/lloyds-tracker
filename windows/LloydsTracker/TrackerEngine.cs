@@ -28,6 +28,9 @@ public sealed class TrackerEngine : IDisposable
 
     private DateTime? _sessionStart;
     private DateTime _lastCovered = DateTime.Now;
+    /// <summary>End of the visible "regular" prompt's period; grows while it waits for an answer.
+    /// null means there's no prompt that may be extended (e.g. pause / end-of-day).</summary>
+    private DateTime? _activePromptEnd;
     private DateTime? _pausedSince;
     private readonly SessionMonitor _session = new();
     private readonly WinFormsTimer _timer;
@@ -99,6 +102,7 @@ public sealed class TrackerEngine : IDisposable
         PauseUntil = null;
         _pausedSince = null;
         AwaitingReturnSince = null;
+        _activePromptEnd = null;
         NextPromptAt = AlignedNextPrompt(now);
         IsTracking = true;
         RaiseChanged();
@@ -110,6 +114,7 @@ public sealed class TrackerEngine : IDisposable
         var now = DateTime.Now;
         if (PauseUntil != null) EndManualPause(now);
         _prompt.Close();
+        _activePromptEnd = null;
         if ((now - _lastCovered).TotalSeconds > 60)
         {
             Show(new PromptRequest
@@ -145,6 +150,7 @@ public sealed class TrackerEngine : IDisposable
         _pausedSince = now;
         PauseUntil = minutes is int m ? now.AddMinutes(m) : DateTime.MaxValue;
         _prompt.Close();
+        _activePromptEnd = null;
         if ((now - _lastCovered).TotalSeconds > 60)
         {
             Show(new PromptRequest
@@ -167,6 +173,7 @@ public sealed class TrackerEngine : IDisposable
     public void Snooze(int minutes)
     {
         _prompt.Close();
+        _activePromptEnd = null;
         // Snap to the 5-min grid so periods (and durations) stay aligned.
         var target = SnapToGrid(DateTime.Now.AddMinutes(minutes));
         NextPromptAt = Max(target, DateTime.Now.AddSeconds(60));
@@ -238,7 +245,14 @@ public sealed class TrackerEngine : IDisposable
             return;
         }
 
-        if (_prompt.IsVisible) return;
+        if (_prompt.IsVisible)
+        {
+            // An unanswered prompt outlived the interval boundary — instead of opening a
+            // second prompt, extend the existing one's period (accumulated time).
+            if (NextPromptAt is DateTime boundary && now >= boundary && _activePromptEnd != null)
+                ExtendActivePrompt(boundary);
+            return;
+        }
         if (NextPromptAt is DateTime next && now >= next)
             AttemptPrompt(now);
     }
@@ -246,7 +260,7 @@ public sealed class TrackerEngine : IDisposable
     private void AttemptPrompt(DateTime now)
     {
         double idle = IdleMonitor.IdleSeconds();
-        if (_session.IsLocked)
+        if (Settings.LockPauseEnabled && _session.IsLocked)
         {
             AwaitingReturnSince = Max(_session.LockedAt ?? now, _lastCovered);
             RaiseChanged();
@@ -261,13 +275,26 @@ public sealed class TrackerEngine : IDisposable
             // The period's end is the scheduled (aligned) prompt time, not the moment of
             // answering — entries stay exactly on the 5-min grid and late answers spill
             // into the next period.
+            var end = NextPromptAt ?? now;
+            _activePromptEnd = end;
             Show(new PromptRequest
             {
                 Start = _lastCovered,
-                End = NextPromptAt ?? now,
+                End = end,
                 AllowSnooze = Settings.PromptStyle == PromptStyle.Floating
             });
+            // Next boundary at which this prompt extends (instead of opening a new one).
+            NextPromptAt = AlignedNextPrompt(end);
         }
+    }
+
+    /// <summary>Extend the visible prompt to the next interval boundary and advance the next one.</summary>
+    private void ExtendActivePrompt(DateTime boundary)
+    {
+        _activePromptEnd = boundary;
+        _prompt.Extend(boundary);
+        NextPromptAt = AlignedNextPrompt(boundary);
+        RaiseChanged();
     }
 
     private void HandleReturn(DateTime gapStart, DateTime now)
@@ -327,6 +354,9 @@ public sealed class TrackerEngine : IDisposable
     private void HandleSubmit(PromptRequest request, IReadOnlyList<PromptSegment> segments)
     {
         var now = DateTime.Now;
+        // Extended end (if the prompt waited across boundaries) takes precedence over the original.
+        var effectiveEnd = _activePromptEnd ?? request.End;
+        _activePromptEnd = null;
         var coveredEnd = request.Start;
         foreach (var seg in segments)
         {
@@ -343,7 +373,7 @@ public sealed class TrackerEngine : IDisposable
         }
         else
         {
-            _lastCovered = Max(_lastCovered, request.End ?? coveredEnd);
+            _lastCovered = Max(_lastCovered, effectiveEnd ?? coveredEnd);
         }
         PersistDay();
 

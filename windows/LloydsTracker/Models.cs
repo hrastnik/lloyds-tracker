@@ -64,8 +64,9 @@ public sealed class AppSettings
     [JsonPropertyName("historyLimit")]
     public int HistoryLimit { get; set; } = 15;
 
+    /// <summary>Keyboard/mouse inactivity beyond the threshold → the period is recorded as a pause.</summary>
     [JsonPropertyName("idleDetectionEnabled")]
-    public bool IdleDetectionEnabled { get; set; } = true;
+    public bool IdleDetectionEnabled { get; set; } = false;
 
     [JsonPropertyName("idleThresholdMinutes")]
     public int IdleThresholdMinutes { get; set; } = 5;
@@ -75,6 +76,10 @@ public sealed class AppSettings
 
     [JsonPropertyName("launchAtLogin")]
     public bool LaunchAtLogin { get; set; } = false;
+
+    /// <summary>Locked screen → the absence period is recorded as a pause.</summary>
+    [JsonPropertyName("lockPauseEnabled")]
+    public bool LockPauseEnabled { get; set; } = false;
 
     [JsonPropertyName("promptStyle")]
     public PromptStyle PromptStyle { get; set; } = PromptStyle.Floating;

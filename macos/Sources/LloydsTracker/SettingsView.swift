@@ -20,14 +20,15 @@ struct SettingsView: View {
             }
 
             Section("Odsutnost") {
-                Toggle("Detekcija odsutnosti", isOn: $engine.settings.idleDetectionEnabled)
+                Toggle("Detekcija neaktivnosti (tipkovnica/miš)", isOn: $engine.settings.idleDetectionEnabled)
                 Picker("Prag neaktivnosti", selection: $engine.settings.idleThresholdMinutes) {
                     ForEach([3, 5, 10, 15], id: \.self) { m in
                         Text("\(m) min").tag(m)
                     }
                 }
                 .disabled(!engine.settings.idleDetectionEnabled)
-                Text("Ako je Mac zaključan ili nema aktivnosti dulje od praga, prompt se odgađa dok se ne vratiš, a odsutnost se bilježi kao pauza.")
+                Toggle("Bilježi pauzu kad je ekran zaključan", isOn: $engine.settings.lockPauseEnabled)
+                Text("Kad je uključeno, razdoblje bez aktivnosti (dulje od praga) odnosno sa zaključanim ekranom bilježi se kao pauza, a prompt se odgađa dok se ne vratiš. Ako je oboje isključeno, prompt te samo pita što si radio u tom periodu.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
