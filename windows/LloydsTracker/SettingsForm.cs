@@ -3,11 +3,15 @@ using System.Windows.Forms;
 
 namespace LloydsTracker;
 
-/// <summary>Settings window — mirrors the SwiftUI SettingsView sections and controls.</summary>
+/// <summary>Settings window — mirrors the SwiftUI SettingsView: the same three tabs
+/// (Promptanje / Radni dan / Sustav) with the same sections. One long list outgrew the
+/// screen height (worse here, since every dimension is DPI-scaled), so it's split into
+/// short pages; the window is sized to the tallest page and each page scrolls if needed.</summary>
 internal sealed class SettingsForm : Form
 {
     private readonly TrackerEngine _engine;
-    private readonly Panel _stack;
+    /// <summary>The page the Build*Section helpers currently append to.</summary>
+    private Panel _stack = null!;
     private int _y;
 
     private ComboBox _idleThreshold = null!;
@@ -15,26 +19,84 @@ internal sealed class SettingsForm : Form
     private ComboBox _autoStopMinute = null!;
     private Label _launchStatus = null!;
 
+    private readonly List<FlatButton> _pills = new();
+    private readonly List<Panel> _pages = new();
+
     public SettingsForm(TrackerEngine engine)
     {
         _engine = engine;
         Text = "Postavke";
-        ClientSize = new Size(Brand.S(460), Brand.S(660));
-        MinimumSize = new Size(Brand.S(460), Brand.S(300));
+        // Width is final from the start (control widths derive from it); the height is set
+        // below, once the pages have been measured.
+        ClientSize = new Size(Brand.S(460), Brand.S(200));
         StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
         BackColor = Palette.Black;
         Font = Brand.Ui(9.5f);
 
-        _stack = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Palette.Black };
-        Controls.Add(_stack);
+        int tabsHeight = Brand.S(46);
+        var tabBar = new Panel { Location = new Point(0, 0), Size = new Size(ClientSize.Width, tabsHeight), BackColor = Palette.Black };
+        Controls.Add(tabBar);
 
+        int contentHeight = 0;
+        AddPage(tabBar, tabsHeight, "Promptanje", () => { BuildPromptSection(); BuildHistorySection(); }, ref contentHeight);
+        AddPage(tabBar, tabsHeight, "Radni dan", () => { BuildAutoStopSection(); BuildIdleSection(); }, ref contentHeight);
+        AddPage(tabBar, tabsHeight, "Sustav", () => { BuildSystemSection(); BuildDataSection(); }, ref contentHeight);
+
+        ClientSize = new Size(ClientSize.Width, tabsHeight + contentHeight);
+        foreach (var page in _pages) page.Size = new Size(ClientSize.Width, contentHeight);
+        SelectTab(0);
+    }
+
+    /// <summary>Build one tab: a pill in the tab bar plus its page. Grows
+    /// <paramref name="contentHeight"/> to fit the tallest page.</summary>
+    private void AddPage(Panel tabBar, int tabsHeight, string title, Action build, ref int contentHeight)
+    {
+        var page = new Panel
+        {
+            Location = new Point(0, tabsHeight),
+            Size = new Size(ClientSize.Width, Brand.S(100)),
+            BackColor = Palette.Black,
+            AutoScroll = true,
+            Visible = false,
+        };
+        _stack = page;
         _y = Brand.S(16);
-        BuildPromptSection();
-        BuildAutoStopSection();
-        BuildIdleSection();
-        BuildHistorySection();
-        BuildSystemSection();
-        BuildDataSection();
+        build();
+        contentHeight = Math.Max(contentHeight, _y + Brand.S(8));
+        Controls.Add(page);
+        _pages.Add(page);
+
+        var font = Brand.Ui(9.5f, FontStyle.Bold);
+        int x = _pills.Count == 0 ? Brand.S(16) : _pills[^1].Right + Brand.S(6);
+        var pill = new FlatButton
+        {
+            Text = title,
+            CornerRadius = 8,
+            Font = font,
+            BackColor = Palette.Black,
+            Size = new Size(TextRenderer.MeasureText(title, font).Width + Brand.S(24), Brand.S(28)),
+            Location = new Point(x, (tabsHeight - Brand.S(28)) / 2),
+        };
+        int index = _pills.Count;
+        pill.Click += (_, _) => SelectTab(index);
+        _pills.Add(pill);
+        tabBar.Controls.Add(pill);
+    }
+
+    private void SelectTab(int index)
+    {
+        for (int i = 0; i < _pages.Count; i++)
+        {
+            bool active = i == index;
+            _pages[i].Visible = active;
+            _pills[i].Fill = active ? Palette.Yellow : Color.Transparent;
+            _pills[i].TextColor = active ? Palette.Black : Palette.Gray;
+            _pills[i].BorderColor = active ? Color.Transparent : Palette.White.OverBlack(0.2);
+            _pills[i].BorderWidth = active ? 0 : 1;
+            _pills[i].Invalidate();
+        }
     }
 
     // MARK: - Sections
@@ -73,7 +135,7 @@ internal sealed class SettingsForm : Form
         _autoStopHour.Enabled = _engine.Settings.AutoStopEnabled;
         _autoStopMinute.Enabled = _engine.Settings.AutoStopEnabled;
 
-        Caption("Minutu prije iskoči upozorenje s opcijom produženja (+15 / +30 / +45 / +1 h) — produženje vrijedi samo za taj dan. Ako ne reagiraš, dan se sam zatvara u zadano vrijeme, pa tracking ne ostane pokrenut preko noći.");
+        Caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut preko noći.");
         Gap(8);
     }
 
@@ -90,7 +152,7 @@ internal sealed class SettingsForm : Form
         _idleThreshold.Enabled = _engine.Settings.IdleDetectionEnabled;
         Toggle("Bilježi pauzu kad je ekran zaključan", _engine.Settings.LockPauseEnabled,
             v => _engine.MutateSettings(s => s.LockPauseEnabled = v));
-        Caption("Kad je uključeno, razdoblje bez aktivnosti (dulje od praga) odnosno sa zaključanim ekranom bilježi se kao pauza, a prompt se odgađa dok se ne vratiš. Ako je oboje isključeno, prompt te samo pita što si radio u tom periodu.");
+        Caption("Uključeno: razdoblje odsutnosti se bilježi kao pauza, a prompt čeka da se vratiš. Isključeno: prompt te u zakazano vrijeme samo pita što si radio.");
         Gap(8);
     }
 
@@ -99,6 +161,7 @@ internal sealed class SettingsForm : Form
         SectionHeader("POVIJEST");
         LabeledCombo("Broj zapamćenih unosa", new[] { 5, 10, 15, 25, 50 }, _engine.Settings.HistoryLimit, "",
             v => _engine.MutateSettings(s => s.HistoryLimit = v));
+        Caption("Koliko se nedavnih unosa pamti za pre-fill i listanje (↑/↓) u promptu.");
         Gap(8);
     }
 
