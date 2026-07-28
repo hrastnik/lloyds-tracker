@@ -81,7 +81,7 @@ pauza, a pita se samo za rad prije odsutnosti.
 
 ## Postavke
 
-Tray → *Postavke…*
+Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 
 | Postavka | Default |
 |---|---|
