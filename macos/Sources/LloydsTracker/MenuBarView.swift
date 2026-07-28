@@ -67,6 +67,16 @@ struct MenuBarView: View {
                 }
             }
 
+            if let autoStop = engine.autoStopText {
+                HStack(spacing: 5) {
+                    Image(systemName: "moon.stars")
+                        .font(.system(size: 9))
+                    Text(autoStop)
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(Color.lloydsGray.opacity(0.7))
+            }
+
             if engine.isTracking {
                 HStack(spacing: 8) {
                     if engine.pauseUntil == nil {

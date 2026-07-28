@@ -3,6 +3,26 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var engine: TrackerEngine
 
+    /// DatePicker radi s Date-om, a postavka je sat+minuta — most između to dvoje.
+    private var autoStopTime: Binding<Date> {
+        Binding(
+            get: {
+                let cal = Calendar.current
+                return cal.date(
+                    bySettingHour: engine.settings.autoStopHour,
+                    minute: engine.settings.autoStopMinute,
+                    second: 0,
+                    of: Date()
+                ) ?? Date()
+            },
+            set: { newValue in
+                let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
+                engine.settings.autoStopHour = comps.hour ?? 16
+                engine.settings.autoStopMinute = comps.minute ?? 0
+            }
+        )
+    }
+
     var body: some View {
         Form {
             Section("Promptanje") {
@@ -17,6 +37,15 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Zvuk kod prompta", isOn: $engine.settings.soundEnabled)
+            }
+
+            Section("Automatsko zaustavljanje") {
+                Toggle("Zaustavi tracking u zadano vrijeme", isOn: $engine.settings.autoStopEnabled)
+                DatePicker("Vrijeme", selection: autoStopTime, displayedComponents: .hourAndMinute)
+                    .disabled(!engine.settings.autoStopEnabled)
+                Text("Minutu prije iskoči upozorenje s opcijom produženja (+15 / +30 / +45 / +1 h) — produženje vrijedi samo za taj dan. Ako ne reagiraš, dan se sam zatvara u zadano vrijeme, pa tracking ne ostane pokrenut preko noći.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Odsutnost") {

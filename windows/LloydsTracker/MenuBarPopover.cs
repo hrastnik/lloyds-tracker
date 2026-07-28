@@ -144,7 +144,15 @@ internal sealed class MenuBarPopover : Form
             UpdateCountdown();
         }
 
-        int rowY = top + status.Height + Brand.S(10);
+        int rowY = top + status.Height + Brand.S(6);
+
+        if (_engine.AutoStopText is string autoStop)
+        {
+            var info = new Label { AutoSize = true, Text = autoStop, Font = Brand.Ui(8f), ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Location = new Point(Brand.S(16), rowY) };
+            Controls.Add(info);
+            rowY += info.Height + Brand.S(2);
+        }
+        rowY += Brand.S(4);
 
         if (_engine.IsTracking)
         {

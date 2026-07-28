@@ -130,6 +130,11 @@ internal sealed class FlatButton : Control
     public Image? Glyph { get; set; }
     public FontStyle TextStyle { get; set; } = FontStyle.Bold;
     public ContentAlignment Align { get; set; } = ContentAlignment.MiddleCenter;
+    /// <summary>Optional second, smaller line centered under <see cref="Control.Text"/>
+    /// (used by the auto-stop chips: "+30 min" over the resulting time).</summary>
+    public string? SubText { get; set; }
+    public Font? SubFont { get; set; }
+    public Color SubColor { get; set; } = Palette.Gray;
 
     private bool _hover;
     private bool _down;
@@ -173,6 +178,22 @@ internal sealed class FlatButton : Control
         // Icon + text, centered as a group.
         var textColor = _hover && fill.A == 0 ? ControlPaint.Light(TextColor, 0.3f) : TextColor;
         var font = Font;
+
+        // Two-line variant: main text over a smaller sub-line, both centered.
+        if (!string.IsNullOrEmpty(SubText))
+        {
+            var subFont = SubFont ?? font;
+            SizeF mainSize = g.MeasureString(Text, font);
+            SizeF subSize = g.MeasureString(SubText, subFont);
+            float blockH = mainSize.Height + subSize.Height;
+            float top = (Height - blockH) / 2f;
+            using var mainBrush = new SolidBrush(textColor);
+            using var subBrush = new SolidBrush(SubColor);
+            g.DrawString(Text, font, mainBrush, new PointF((Width - mainSize.Width) / 2f, top));
+            g.DrawString(SubText, subFont, subBrush, new PointF((Width - subSize.Width) / 2f, top + mainSize.Height));
+            return;
+        }
+
         SizeF textSize = string.IsNullOrEmpty(Text) ? SizeF.Empty : g.MeasureString(Text, font);
         int glyphW = Glyph != null ? Glyph.Width + Brand.S(6) : 0;
         float totalW = textSize.Width + glyphW;

@@ -61,6 +61,17 @@ internal static class PromptStyleExtensions
 /// macOS encoder's sortedKeys output.</summary>
 public sealed class AppSettings
 {
+    /// <summary>Automatic stop of tracking at a set time of day — so tracking never stays
+    /// on overnight. A minute before, a warning pops up offering a same-day extension.</summary>
+    [JsonPropertyName("autoStopEnabled")]
+    public bool AutoStopEnabled { get; set; } = true;
+
+    [JsonPropertyName("autoStopHour")]
+    public int AutoStopHour { get; set; } = 16;
+
+    [JsonPropertyName("autoStopMinute")]
+    public int AutoStopMinute { get; set; } = 0;
+
     [JsonPropertyName("historyLimit")]
     public int HistoryLimit { get; set; } = 15;
 

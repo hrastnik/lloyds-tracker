@@ -11,6 +11,9 @@ final class TrackerEngine: ObservableObject {
     @Published var nextPromptAt: Date?
     @Published var awaitingReturnSince: Date?
     @Published var launchAtLoginStatus: String?
+    /// Vrijeme automatskog zaustavljanja za trenutnu sesiju (nil = isključeno).
+    /// Produženja iz upozorenja mijenjaju samo ovo, ne i postavku.
+    @Published var autoStopAt: Date?
 
     @Published var settings: AppSettings {
         didSet {
@@ -31,6 +34,10 @@ final class TrackerEngine: ObservableObject {
     private var timer: Timer?
     private let prompt = PromptController()
     private let startupReminder = StartupReminderController()
+    private let autoStopWarning = AutoStopWarningController()
+    private var autoStopWarningShown = false
+    /// Koliko prije automatskog zaustavljanja iskoči upozorenje.
+    private let autoStopLead: TimeInterval = 60
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
@@ -100,21 +107,45 @@ final class TrackerEngine: ObservableObject {
         awaitingReturnSince = nil
         activePromptEnd = nil
         nextPromptAt = alignedNextPrompt(after: now)
+        autoStopWarningShown = false
+        autoStopAt = nextAutoStop(after: now)
         isTracking = true
     }
 
     func stop() {
+        stop(at: Date())
+    }
+
+    /// `endTime` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
+    /// vrijeme, a ne trenutak kad se odgovori na zadnji prompt (koji može biti i sutra).
+    private func stop(at endTime: Date) {
         guard isTracking else { return }
-        let now = Date()
+        cancelAutoStop()
         if pauseUntil != nil {
-            endManualPause(at: now)
+            endManualPause(at: endTime)
         }
         prompt.close()
         activePromptEnd = nil
-        if now.timeIntervalSince(lastCovered) > 60 {
+
+        let periodStart = lastCovered
+        var periodEnd = endTime
+        // Ako je korisnik odsutan (idle/zaključan ekran), odsutnost bilježimo kao pauzu,
+        // a pitamo samo za rad do trenutka odsutnosti — inače bi cijela odsutnost
+        // završila kao "rad".
+        if let gapStart = awaitingReturnSince {
+            awaitingReturnSince = nil
+            let pauseStart = max(gapStart, periodStart)
+            if endTime > pauseStart {
+                entries.append(Entry(start: pauseStart, end: endTime, text: "Pauza (odsutnost)", kind: .pause))
+            }
+            periodEnd = pauseStart
+            lastCovered = max(lastCovered, endTime)
+        }
+
+        if periodEnd.timeIntervalSince(periodStart) > 60 {
             show(PromptRequest(
-                start: lastCovered,
-                end: now,
+                start: periodStart,
+                end: periodEnd,
                 isFinal: true,
                 note: "Kraj dana — što si radio u zadnjem periodu?",
                 allowSnooze: false
@@ -126,6 +157,7 @@ final class TrackerEngine: ObservableObject {
 
     private func finalizeStop() {
         isTracking = false
+        cancelAutoStop()
         nextPromptAt = nil
         sessionStart = nil
         awaitingReturnSince = nil
@@ -208,11 +240,67 @@ final class TrackerEngine: ObservableObject {
         return min(next, nextHour)
     }
 
+    // MARK: - Automatsko zaustavljanje
+
+    /// Sljedeće zaustavljanje u zadano vrijeme dana; ako je to vrijeme danas već prošlo,
+    /// zakazuje se za sutra (npr. start u 20:00 uz auto-stop 16:00).
+    private func nextAutoStop(after date: Date) -> Date? {
+        guard settings.autoStopEnabled else { return nil }
+        let cal = Calendar.current
+        var comps = cal.dateComponents([.year, .month, .day], from: date)
+        comps.hour = settings.autoStopHour
+        comps.minute = settings.autoStopMinute
+        comps.second = 0
+        guard let target = cal.date(from: comps) else { return nil }
+        if target > date { return target }
+        return cal.date(byAdding: .day, value: 1, to: target) ?? target.addingTimeInterval(86_400)
+    }
+
+    private func cancelAutoStop() {
+        autoStopAt = nil
+        autoStopWarningShown = false
+        autoStopWarning.close()
+    }
+
+    /// Produži današnje zaustavljanje — računa se od zakazanog vremena (16:00 + 30 → 16:30).
+    /// Postavka se ne mijenja, pa sutra opet vrijedi zadano vrijeme.
+    func extendAutoStop(minutes: Int) {
+        guard let current = autoStopAt else { return }
+        autoStopWarning.close()
+        autoStopWarningShown = false
+        autoStopAt = max(current, Date()).addingTimeInterval(TimeInterval(minutes * 60))
+    }
+
+    private func showAutoStopWarning(stopAt: Date) {
+        autoStopWarningShown = true
+        if settings.soundEnabled {
+            NSSound(named: "Glass")?.play()
+        }
+        autoStopWarning.show(
+            stopAt: stopAt,
+            lead: autoStopLead,
+            onExtend: { [weak self] minutes in self?.extendAutoStop(minutes: minutes) },
+            onStopNow: { [weak self] in self?.stop() },
+            onDismiss: {}
+        )
+    }
+
     // MARK: - Tick petlja
 
     private func tick() {
         guard isTracking else { return }
         let now = Date()
+
+        // Prije svega ostalog — auto-stop vrijedi i kad je pauzirano ili se čeka povratak.
+        if settings.autoStopEnabled, let stopAt = autoStopAt {
+            if now >= stopAt {
+                stop(at: stopAt)
+                return
+            }
+            if !autoStopWarningShown, stopAt.timeIntervalSince(now) <= autoStopLead {
+                showAutoStopWarning(stopAt: stopAt)
+            }
+        }
 
         if let until = pauseUntil {
             if now >= until { endManualPause(at: now) }
@@ -374,6 +462,14 @@ final class TrackerEngine: ObservableObject {
         if old.launchAtLogin != settings.launchAtLogin {
             applyLaunchAtLogin()
         }
+        // Promjena vremena/uključenosti poništava eventualno današnje produženje.
+        if old.autoStopEnabled != settings.autoStopEnabled
+            || old.autoStopHour != settings.autoStopHour
+            || old.autoStopMinute != settings.autoStopMinute {
+            autoStopWarning.close()
+            autoStopWarningShown = false
+            autoStopAt = isTracking ? nextAutoStop(after: Date()) : nil
+        }
     }
 
     private func applyLaunchAtLogin() {
@@ -413,5 +509,12 @@ final class TrackerEngine: ObservableObject {
             return "Odsutan od \(Fmt.hhmm(since)) — čekam povratak"
         }
         return "Trackam"
+    }
+
+    /// "Auto-stop u 16:00" — nil kad je isključeno ili kad tracking nije aktivan.
+    var autoStopText: String? {
+        guard isTracking, let at = autoStopAt else { return nil }
+        let today = Calendar.current.isDate(at, inSameDayAs: Date())
+        return today ? "Auto-stop u \(Fmt.hhmm(at))" : "Auto-stop sutra u \(Fmt.hhmm(at))"
     }
 }

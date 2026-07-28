@@ -11,13 +11,15 @@ internal sealed class SettingsForm : Form
     private int _y;
 
     private ComboBox _idleThreshold = null!;
+    private ComboBox _autoStopHour = null!;
+    private ComboBox _autoStopMinute = null!;
     private Label _launchStatus = null!;
 
     public SettingsForm(TrackerEngine engine)
     {
         _engine = engine;
         Text = "Postavke";
-        ClientSize = new Size(Brand.S(460), Brand.S(560));
+        ClientSize = new Size(Brand.S(460), Brand.S(660));
         MinimumSize = new Size(Brand.S(460), Brand.S(300));
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Palette.Black;
@@ -28,6 +30,7 @@ internal sealed class SettingsForm : Form
 
         _y = Brand.S(16);
         BuildPromptSection();
+        BuildAutoStopSection();
         BuildIdleSection();
         BuildHistorySection();
         BuildSystemSection();
@@ -49,6 +52,28 @@ internal sealed class SettingsForm : Form
 
         Toggle("Zvuk kod prompta", _engine.Settings.SoundEnabled,
             v => _engine.MutateSettings(s => s.SoundEnabled = v));
+        Gap(8);
+    }
+
+    private void BuildAutoStopSection()
+    {
+        SectionHeader("AUTOMATSKO ZAUSTAVLJANJE");
+        Toggle("Zaustavi tracking u zadano vrijeme", _engine.Settings.AutoStopEnabled, v =>
+        {
+            _engine.MutateSettings(s => s.AutoStopEnabled = v);
+            _autoStopHour.Enabled = v;
+            _autoStopMinute.Enabled = v;
+        });
+
+        (_autoStopHour, _autoStopMinute) = LabeledTimeCombos(
+            "Vrijeme",
+            _engine.Settings.AutoStopHour,
+            _engine.Settings.AutoStopMinute,
+            (h, m) => _engine.MutateSettings(s => { s.AutoStopHour = h; s.AutoStopMinute = m; }));
+        _autoStopHour.Enabled = _engine.Settings.AutoStopEnabled;
+        _autoStopMinute.Enabled = _engine.Settings.AutoStopEnabled;
+
+        Caption("Minutu prije iskoči upozorenje s opcijom produženja (+15 / +30 / +45 / +1 h) — produženje vrijedi samo za taj dan. Ako ne reagiraš, dan se sam zatvara u zadano vrijeme, pa tracking ne ostane pokrenut preko noći.");
         Gap(8);
     }
 
@@ -133,9 +158,60 @@ internal sealed class SettingsForm : Form
 
     private ComboBox LabeledComboRaw(string label, string[] items, int selectedIndex, Action<int> onChange)
     {
+        RowLabel(label);
+
+        var combo = DarkCombo(items, selectedIndex, new Point(Brand.S(236), _y),
+            ClientSize.Width - Brand.S(20) - Brand.S(236),
+            AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right);
+        combo.SelectedIndexChanged += (_, _) => { if (combo.SelectedIndex >= 0) onChange(combo.SelectedIndex); };
+        _stack.Controls.Add(combo);
+
+        _y += Brand.S(34);
+        return combo;
+    }
+
+    /// <summary>Hour + minute pickers on one row (the auto-stop time). Minutes step by 5,
+    /// but a value written by the macOS build with any minute stays selectable.</summary>
+    private (ComboBox Hour, ComboBox Minute) LabeledTimeCombos(string label, int hour, int minute, Action<int, int> onChange)
+    {
+        RowLabel(label);
+
+        int left = Brand.S(236);
+        int gap = Brand.S(8);
+        int comboW = (ClientSize.Width - Brand.S(20) - left - gap) / 2;
+
+        var hours = Enumerable.Range(0, 24).ToList();
+        var minutes = Enumerable.Range(0, 12).Select(i => i * 5).ToList();
+        minute = Math.Clamp(minute, 0, 59);
+        if (!minutes.Contains(minute)) { minutes.Add(minute); minutes.Sort(); }
+
+        var hourCombo = DarkCombo(hours.Select(h => h.ToString("D2")).ToArray(),
+            hours.IndexOf(Math.Clamp(hour, 0, 23)), new Point(left, _y), comboW, AnchorStyles.Top | AnchorStyles.Left);
+        var minuteCombo = DarkCombo(minutes.Select(m => m.ToString("D2")).ToArray(),
+            minutes.IndexOf(minute), new Point(left + comboW + gap, _y), comboW, AnchorStyles.Top | AnchorStyles.Left);
+
+        void Changed()
+        {
+            if (hourCombo.SelectedIndex < 0 || minuteCombo.SelectedIndex < 0) return;
+            onChange(hours[hourCombo.SelectedIndex], minutes[minuteCombo.SelectedIndex]);
+        }
+        hourCombo.SelectedIndexChanged += (_, _) => Changed();
+        minuteCombo.SelectedIndexChanged += (_, _) => Changed();
+
+        _stack.Controls.Add(hourCombo);
+        _stack.Controls.Add(minuteCombo);
+        _y += Brand.S(34);
+        return (hourCombo, minuteCombo);
+    }
+
+    private void RowLabel(string label)
+    {
         var lbl = new Label { AutoSize = false, Text = label, ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(Brand.S(20), _y + Brand.S(4)), Size = new Size(Brand.S(210), Brand.S(22)), TextAlign = ContentAlignment.MiddleLeft };
         _stack.Controls.Add(lbl);
+    }
 
+    private static ComboBox DarkCombo(string[] items, int selectedIndex, Point location, int width, AnchorStyles anchor)
+    {
         var combo = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -144,17 +220,13 @@ internal sealed class SettingsForm : Form
             ForeColor = Palette.White,
             Font = Brand.Ui(9.5f),
             DrawMode = DrawMode.OwnerDrawFixed,
-            Location = new Point(Brand.S(236), _y),
-            Width = ClientSize.Width - Brand.S(20) - Brand.S(236),
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Location = location,
+            Width = width,
+            Anchor = anchor,
         };
         combo.Items.AddRange(items.Cast<object>().ToArray());
         combo.DrawItem += DarkComboDrawItem;
         if (selectedIndex >= 0 && selectedIndex < items.Length) combo.SelectedIndex = selectedIndex;
-        combo.SelectedIndexChanged += (_, _) => { if (combo.SelectedIndex >= 0) onChange(combo.SelectedIndex); };
-        _stack.Controls.Add(combo);
-
-        _y += Brand.S(34);
         return combo;
     }
 

@@ -4,7 +4,8 @@ Aplikacija za praćenje vremena na poslu u Lloyds Digital vizualnom stilu
 (crna `#070707` + žuta `#FBDE07`). Sjedi u traci (menu bar / system tray) i u
 zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se spremaju
 lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
-exportati u CSV.
+exportati u CSV. Ako zaboraviš isključiti, tracking se **sam zaustavlja** u zadano vrijeme
+(default 16:00) — minutu prije iskoči upozorenje s opcijom produženja samo za taj dan.
 
 Dvije nativne verzije, isti JSON format podataka:
 

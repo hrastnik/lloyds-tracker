@@ -18,6 +18,9 @@ public sealed class TrackerEngine : IDisposable
     public DateTime? PauseUntil { get; private set; }
     public DateTime? NextPromptAt { get; private set; }
     public DateTime? AwaitingReturnSince { get; private set; }
+    /// <summary>The auto-stop time for the current session (null = off). Extensions from the
+    /// warning change only this, never the setting.</summary>
+    public DateTime? AutoStopAt { get; private set; }
     public string? LaunchAtLoginStatus { get; private set; }
     public AppSettings Settings { get; private set; }
 
@@ -36,6 +39,10 @@ public sealed class TrackerEngine : IDisposable
     private readonly WinFormsTimer _timer;
     private readonly PromptController _prompt = new();
     private readonly StartupReminderController _startupReminder = new();
+    private readonly AutoStopWarningController _autoStopWarning = new();
+    private bool _autoStopWarningShown;
+    /// <summary>How long before the automatic stop the warning pops up.</summary>
+    private const double AutoStopLead = 60;
     /// <summary>Hidden control used to marshal background-thread callbacks (SessionSwitch)
     /// back onto the UI thread.</summary>
     private readonly Control _marshal = new();
@@ -104,23 +111,46 @@ public sealed class TrackerEngine : IDisposable
         AwaitingReturnSince = null;
         _activePromptEnd = null;
         NextPromptAt = AlignedNextPrompt(now);
+        _autoStopWarningShown = false;
+        AutoStopAt = NextAutoStop(now);
         IsTracking = true;
         RaiseChanged();
     }
 
-    public void Stop()
+    public void Stop() => Stop(DateTime.Now);
+
+    /// <summary><paramref name="endTime"/> is the end of the last period — for an automatic
+    /// stop that's the scheduled time, not the moment the final prompt gets answered (which
+    /// may well be the next morning).</summary>
+    private void Stop(DateTime endTime)
     {
         if (!IsTracking) return;
-        var now = DateTime.Now;
-        if (PauseUntil != null) EndManualPause(now);
+        CancelAutoStop();
+        if (PauseUntil != null) EndManualPause(endTime);
         _prompt.Close();
         _activePromptEnd = null;
-        if ((now - _lastCovered).TotalSeconds > 60)
+
+        var periodStart = _lastCovered;
+        var periodEnd = endTime;
+        // If the user is away (idle / locked screen), record the absence as a pause and ask
+        // only about the work up to the moment they left — otherwise the whole absence would
+        // end up as "work".
+        if (AwaitingReturnSince is DateTime gapStart)
+        {
+            AwaitingReturnSince = null;
+            var pauseStart = Max(gapStart, periodStart);
+            if (endTime > pauseStart)
+                Entries.Add(new Entry(pauseStart, endTime, "Pauza (odsutnost)", EntryKind.Pause));
+            periodEnd = pauseStart;
+            _lastCovered = Max(_lastCovered, endTime);
+        }
+
+        if ((periodEnd - periodStart).TotalSeconds > 60)
         {
             Show(new PromptRequest
             {
-                Start = _lastCovered,
-                End = now,
+                Start = periodStart,
+                End = periodEnd,
                 IsFinal = true,
                 Note = "Kraj dana — što si radio u zadnjem periodu?",
                 AllowSnooze = false
@@ -135,6 +165,7 @@ public sealed class TrackerEngine : IDisposable
     private void FinalizeStop()
     {
         IsTracking = false;
+        CancelAutoStop();
         NextPromptAt = null;
         _sessionStart = null;
         AwaitingReturnSince = null;
@@ -225,12 +256,65 @@ public sealed class TrackerEngine : IDisposable
         return Min(next, nextHour);
     }
 
+    // MARK: - Automatic stop
+
+    /// <summary>Next stop at the configured time of day; if that time has already passed
+    /// today, it's scheduled for tomorrow (e.g. start at 20:00 with auto-stop 16:00).</summary>
+    private DateTime? NextAutoStop(DateTime after)
+    {
+        if (!Settings.AutoStopEnabled) return null;
+        int hour = Math.Clamp(Settings.AutoStopHour, 0, 23);
+        int minute = Math.Clamp(Settings.AutoStopMinute, 0, 59);
+        var target = new DateTime(after.Year, after.Month, after.Day, hour, minute, 0, after.Kind);
+        return target > after ? target : target.AddDays(1);
+    }
+
+    private void CancelAutoStop()
+    {
+        AutoStopAt = null;
+        _autoStopWarningShown = false;
+        _autoStopWarning.Close();
+    }
+
+    /// <summary>Extend today's stop — counted from the scheduled time (16:00 + 30 → 16:30).
+    /// The setting is untouched, so tomorrow the configured time applies again.</summary>
+    public void ExtendAutoStop(int minutes)
+    {
+        if (AutoStopAt is not DateTime current) return;
+        _autoStopWarning.Close();
+        _autoStopWarningShown = false;
+        AutoStopAt = Max(current, DateTime.Now).AddMinutes(minutes);
+        RaiseChanged();
+    }
+
+    private void ShowAutoStopWarning(DateTime stopAt)
+    {
+        _autoStopWarningShown = true;
+        if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
+        _autoStopWarning.Show(stopAt, AutoStopLead,
+            onExtend: ExtendAutoStop,
+            onStopNow: Stop,
+            onDismiss: () => { });
+    }
+
     // MARK: - Tick loop
 
     private void Tick()
     {
         if (!IsTracking) return;
         var now = DateTime.Now;
+
+        // Before anything else — the auto-stop applies while paused or awaiting a return too.
+        if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt)
+        {
+            if (now >= stopAt)
+            {
+                Stop(stopAt);
+                return;
+            }
+            if (!_autoStopWarningShown && (stopAt - now).TotalSeconds <= AutoStopLead)
+                ShowAutoStopWarning(stopAt);
+        }
 
         if (PauseUntil is DateTime until)
         {
@@ -430,6 +514,16 @@ public sealed class TrackerEngine : IDisposable
 
         if (old.LaunchAtLogin != Settings.LaunchAtLogin)
             LaunchAtLoginStatus = LaunchAtLogin.Apply(Settings.LaunchAtLogin);
+
+        // Changing the time / toggle drops any extension granted for today.
+        if (old.AutoStopEnabled != Settings.AutoStopEnabled
+            || old.AutoStopHour != Settings.AutoStopHour
+            || old.AutoStopMinute != Settings.AutoStopMinute)
+        {
+            _autoStopWarning.Close();
+            _autoStopWarningShown = false;
+            AutoStopAt = IsTracking ? NextAutoStop(DateTime.Now) : null;
+        }
     }
 
     // MARK: - UI helpers
@@ -458,6 +552,17 @@ public sealed class TrackerEngine : IDisposable
         }
     }
 
+    /// <summary>"Auto-stop u 16:00" — null when off or when tracking isn't running.</summary>
+    public string? AutoStopText
+    {
+        get
+        {
+            if (!IsTracking || AutoStopAt is not DateTime at) return null;
+            bool today = at.Date == DateTime.Now.Date;
+            return today ? $"Auto-stop u {Fmt.Hhmm(at)}" : $"Auto-stop sutra u {Fmt.Hhmm(at)}";
+        }
+    }
+
     /// <summary>SessionSwitch may arrive on a background thread — hop to the UI thread
     /// before touching any UI-observing state.</summary>
     private void OnSessionChanged()
@@ -480,6 +585,7 @@ public sealed class TrackerEngine : IDisposable
         _timer.Dispose();
         _session.Dispose();
         _prompt.Close();
+        _autoStopWarning.Close();
         _marshal.Dispose();
     }
 }

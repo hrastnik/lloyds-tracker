@@ -36,6 +36,22 @@ Dvije neovisne opcije, **obje po defaultu isključene**:
 
 Kad je opcija uključena, prompt se odgađa dok se ne vratiš; po povratku te pita što si radio **prije** odsutnosti, a samo razdoblje odsutnosti se bilježi kao pauza. Ako su obje isključene, prompt te u zakazano vrijeme samo pita što si radio.
 
+### Automatsko zaustavljanje
+
+Da tracking ne ostane pokrenut preko noći, dan se **sam zatvara u zadano vrijeme**
+(default **16:00**, mijenja se u postavkama).
+
+Minutu prije iskoči upozorenje u donjem desnom kutu — s odbrojavanjem i trakom koja se
+prazni — i nudi produženje **+15 / +30 / +45 / +1 h** (na svakom gumbu piše do kada), plus
+*Zaustavi sad*. Produženje vrijedi **samo za taj dan**; postavka ostaje nepromijenjena, a
+minutu prije novog vremena upozorenje se ponovi — pa nema načina da dan ostane otvoren
+slučajno.
+
+Ako se ne reagira, dan se zatvara: zadnji period završava u zakazano vrijeme (ne u trenutak
+kad se odgovori na zadnji prompt), pa unosi ostaju ispravni i kad se odgovori sljedeći dan.
+Ako je u tom trenutku aktivna odsutnost (idle/zaključan ekran), to razdoblje se bilježi kao
+pauza, a pita se samo za rad prije odsutnosti.
+
 ## Postavke
 
 Status bar ikona → *Postavke…*
@@ -45,6 +61,7 @@ Status bar ikona → *Postavke…*
 | Interval promptanja | 15 min (5–60) |
 | Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
 | Zvuk kod prompta | uključen |
+| Automatsko zaustavljanje + vrijeme | uključeno, 16:00 |
 | Detekcija neaktivnosti (tipkovnica/miš) + prag | isključena, 5 min |
 | Bilježi pauzu kad je ekran zaključan | isključeno |
 | Broj zapamćenih unosa (povijest) | 15 |
@@ -74,6 +91,8 @@ Sources/LloydsTracker/
 ├── MenuBarView.swift      # popover iz status bara
 ├── SummaryView.swift      # pregled dana, copy/CSV export
 ├── SettingsView.swift     # postavke
+├── StartupReminder.swift  # pop-up podsjetnik na pokretanju
+├── AutoStopWarning.swift  # upozorenje 1 min prije auto-stopa + produženja
 ├── Store.swift            # JSON pohrana
 ├── IdleMonitor.swift      # detekcija neaktivnosti (CGEventSource)
 ├── Models.swift           # Entry, AppSettings, grupiranje

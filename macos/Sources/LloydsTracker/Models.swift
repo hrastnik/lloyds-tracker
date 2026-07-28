@@ -41,6 +41,11 @@ struct AppSettings: Codable, Equatable {
     var historyLimit: Int = 15
     var launchAtLogin: Bool = false
     var showStartupReminder: Bool = true
+    /// Automatsko zaustavljanje trackinga u zadano vrijeme — da tracking ne ostane
+    /// pokrenut preko noći. Minutu prije iskoči upozorenje s opcijom produženja.
+    var autoStopEnabled: Bool = true
+    var autoStopHour: Int = 16
+    var autoStopMinute: Int = 0
 
     init() {}
 
@@ -58,6 +63,9 @@ struct AppSettings: Codable, Equatable {
         historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit) ?? d.historyLimit
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
         showStartupReminder = try c.decodeIfPresent(Bool.self, forKey: .showStartupReminder) ?? d.showStartupReminder
+        autoStopEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoStopEnabled) ?? d.autoStopEnabled
+        autoStopHour = try c.decodeIfPresent(Int.self, forKey: .autoStopHour) ?? d.autoStopHour
+        autoStopMinute = try c.decodeIfPresent(Int.self, forKey: .autoStopMinute) ?? d.autoStopMinute
     }
 }
 
