@@ -31,11 +31,33 @@ cd windows
 .\build.ps1                                 # → windows\dist\LloydsTracker.exe
 ```
 
-Zahtjevi: .NET 8 SDK (Windows). Jedan self-contained `.exe`, bez runtime instalacije.
-Detalji: [windows/README.md](windows/README.md).
+Zahtjevi: .NET 8 SDK (Windows). Jedan mali framework-dependent `.exe` (~2–3 MB) — na
+računalu treba **.NET 8 Desktop Runtime**. Detalji: [windows/README.md](windows/README.md).
 
-Windows verziju automatski builda **GitHub Actions CI** ([.github/workflows/windows.yml](.github/workflows/windows.yml)) —
-gotov `.exe` je dostupan kao build artifact na svakom pushu.
+## Nova verzija / Windows build
+
+WinForms je `net8.0-windows`, pa se Windows `.exe` **ne može buildati na Macu** — to radi
+GitHub Actions:
+
+| Trigger | Workflow | Rezultat |
+|---|---|---|
+| push na `main` koji dira `windows/**` | [windows.yml](.github/workflows/windows.yml) | `.exe` kao **build artifact** (traje 90 dana, treba GitHub login) |
+| tag `vX.Y.Z` | [release.yml](.github/workflows/release.yml) | **GitHub Release** s priloženim `.exe` (verzija se uzima iz taga) |
+
+Postupak za novu verziju:
+
+```sh
+# 1. bumpaj verziju na oba porta (drži ih usklađene):
+#      macos/Support/Info.plist  → CFBundleShortVersionString (+ CFBundleVersion)
+#      windows/LloydsTracker/LloydsTracker.csproj → <Version>
+# 2. commit + push na main  (→ CI provjeri da se Windows verzija kompajlira)
+git push origin main
+# 3. tag = release s .exe-om
+git tag v1.1.0 && git push origin v1.1.0
+gh run watch                       # ili: gh release view v1.1.0
+# 4. macOS build je lokalan:
+cd macos && ./build.sh && cp -r dist/LloydsTracker.app /Applications/
+```
 
 ## Podaci
 
