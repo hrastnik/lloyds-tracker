@@ -45,10 +45,8 @@ final class StartupReminderController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = hosting
         panel.setContentSize(size)
-        if let screen = NSScreen.main {
-            let f = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
-        }
+        let f = PromptController.promptScreen().visibleFrame
+        panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
         panel.isReleasedWhenClosed = false
         panel.makeKeyAndOrderFront(nil)
         window = panel

@@ -10,6 +10,7 @@ namespace LloydsTracker;
 internal static class TrayIconFactory
 {
     private static readonly Dictionary<TrayState, Icon> Cache = new();
+    private static Icon? _windowIcon;
 
     public static Icon For(TrayState state)
     {
@@ -19,14 +20,20 @@ internal static class TrayIconFactory
         return icon;
     }
 
-    private static Icon Build(TrayState state)
+    /// <summary>Same tile, bigger — for window title bars, the taskbar and Alt+Tab
+    /// (SummaryForm, SettingsForm). Counterpart of the macOS AppIcon.</summary>
+    public static Icon Window => _windowIcon ??= Build(TrayState.Tracking, 64);
+
+    private static Icon Build(TrayState state, int size = 32)
     {
         const int s = 32;
-        using var bmp = new Bitmap(s, s);
+        using var bmp = new Bitmap(size, size);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
+            // The geometry below is written on a 32-px grid; scaling keeps it crisp at any size.
+            g.ScaleTransform(size / (float)s, size / (float)s);
 
             // Branded tile: the Lloyds yellow rounded square. Always visible against
             // any taskbar; the state is carried by the black glyph on top. Clip to the

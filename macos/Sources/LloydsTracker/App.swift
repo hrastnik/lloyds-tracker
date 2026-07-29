@@ -10,6 +10,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // .preferredColorScheme — pa im tekst na light Macu ispadne crn i nevidljiv.
         // Forsiramo dark appearance globalno da se boje razriješe za tamnu podlogu.
         NSApp.appearance = NSAppearance(named: .darkAqua)
+
+        // Brand pločica kao ikona procesa (Dock, Cmd+Tab) — vrijedi i kad se pokreće
+        // izvan .app bundle-a, gdje AppIcon.icns iz Resources ne postoji.
+        NSApp.applicationIconImage = AppIcon.image(side: 512)
+
+        // "Pregled dana" i "Postavke" su pravi prozori, pa dok je koji otvoren aplikacija
+        // ide u .regular — dobije ikonu u Docku i mjesto u Cmd+Tab prebacivaču. Kad se
+        // zatvore, vraća se u .accessory da ne visi u Docku bez potrebe.
+        for name in [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.willCloseNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                // willClose dolazi dok je prozor još vidljiv — odgodi na sljedeći ciklus.
+                DispatchQueue.main.async { self?.syncActivationPolicy() }
+            }
+        }
+    }
+
+    /// Prompt i popover su borderless prozori, pa naslovna traka razdvaja "prave" prozore
+    /// (Pregled dana, Postavke, Export panel) od onih koji ne smiju mijenjati politiku.
+    private var appWindow: NSWindow? {
+        NSApp.windows.first { $0.isVisible && $0.styleMask.contains(.titled) }
+    }
+
+    private func syncActivationPolicy() {
+        let wanted: NSApplication.ActivationPolicy = appWindow != nil ? .regular : .accessory
+        guard NSApp.activationPolicy() != wanted else { return }
+        NSApp.setActivationPolicy(wanted)
+        if wanted == .regular {
+            // Promjena politike odnese fokus prozoru — vrati ga u prvi plan.
+            NSApp.activate(ignoringOtherApps: true)
+            appWindow?.makeKeyAndOrderFront(nil)
+        }
     }
 }
 

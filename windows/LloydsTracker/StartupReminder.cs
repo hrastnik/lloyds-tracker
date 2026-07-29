@@ -91,7 +91,7 @@ internal sealed class StartupReminderForm : Form
 
         ClientSize = new Size(ClientSize.Width, y);
 
-        var wa = Screen.PrimaryScreen!.WorkingArea;
+        var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Top + Brand.S(24));
         Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
     }

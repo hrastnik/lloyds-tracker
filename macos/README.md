@@ -27,6 +27,27 @@ Zahtjevi: macOS 14+, Xcode toolchain (Swift 6).
 3. **Pauziraj** (15/30/60 min ili do nastavka) — bez promptanja, vrijeme se bilježi kao pauza.
 4. **Završi dan** → otvara se pregled dana s grupiranim vremenima, *Kopiraj pregled* ili *Export CSV*.
 
+### Prozori i Cmd+Tab
+
+Aplikacija je menu bar app (`.accessory`) — bez ikone u Docku. Dok je otvoren **Pregled dana**
+ili **Postavke**, prebacuje se u `.regular`, pa se pojavi u Docku i u **Cmd+Tab** prebacivaču
+s brand ikonom; kad se prozori zatvore, vraća se u `.accessory`. Prompt i popover su
+borderless prozori i ne mijenjaju to.
+
+Ikona (`AppIcon.icns`) se generira kod builda iz istog koda kao pločica u traci
+(`AppIcon.swift` + `Support/IconGen`), pa ne mogu razići.
+
+### Pregled dana
+
+Dva taba: **Grupirano** (zbrojeno po opisu) i **Kronološki** (unos po unos, s brisanjem).
+
+U kronološkom tabu opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
+prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
+`Mamic web 15:00–15:15` postaje `Mamic web 14:45–15:15`, s oznakom koliko je blokova
+spojeno (`2×`). Spajaju se samo neposredni susjedi (jedan završava kad drugi počinje), pa
+pauza ili drugi opis između prekida niz. Brisanje spojenog reda briše sve njegove blokove.
+Postavka se pamti.
+
 ### Odsutnost
 
 Dvije neovisne opcije, **obje po defaultu isključene**:
@@ -47,6 +68,9 @@ prazni — i nudi produženje **+15 / +30 / +45 / +1 h** (na svakom gumbu piše 
 minutu prije novog vremena upozorenje se ponovi — pa nema načina da dan ostane otvoren
 slučajno.
 
+Zaustavljanje u toj zadnjoj minuti (*Zaustavi sad* ili *Završi dan* iz menija) bilježi zadnji
+period **do zakazanog vremena** — dan uvijek završi na 17:00, a ne na 16:59.
+
 Ako se ne reagira, dan se zatvara: zadnji period završava u zakazano vrijeme (ne u trenutak
 kad se odgovori na zadnji prompt), pa unosi ostaju ispravni i kad se odgovori sljedeći dan.
 Ako je u tom trenutku aktivna odsutnost (idle/zaključan ekran), to razdoblje se bilježi kao
@@ -66,6 +90,7 @@ Status bar ikona → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, 
 | Bilježi pauzu kad je ekran zaključan | isključeno |
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave | isključeno (zahtijeva .app u /Applications) |
+| Spoji susjedne unose istog naziva (toggle u *Pregled dana → Kronološki*) | uključeno |
 
 ## Podaci
 
@@ -93,6 +118,7 @@ Sources/LloydsTracker/
 ├── SettingsView.swift     # postavke
 ├── StartupReminder.swift  # pop-up podsjetnik na pokretanju
 ├── AutoStopWarning.swift  # upozorenje 1 min prije auto-stopa + produženja
+├── AppIcon.swift          # brand ikona (Dock/Cmd+Tab + izvor za AppIcon.icns)
 ├── Store.swift            # JSON pohrana
 ├── IdleMonitor.swift      # detekcija neaktivnosti (CGEventSource)
 ├── Models.swift           # Entry, AppSettings, grupiranje

@@ -117,7 +117,17 @@ public sealed class TrackerEngine : IDisposable
         RaiseChanged();
     }
 
-    public void Stop() => Stop(DateTime.Now);
+    public void Stop()
+    {
+        var now = DateTime.Now;
+        // Stopping in the last minute before the auto-stop (from the warning or the tray menu)
+        // still records the period up to the scheduled time — otherwise the day ends a minute
+        // before the setting (e.g. 16:59:46 instead of 17:00).
+        if (AutoStopAt is DateTime scheduled && scheduled > now && (scheduled - now).TotalSeconds <= AutoStopLead)
+            Stop(scheduled);
+        else
+            Stop(now);
+    }
 
     /// <summary><paramref name="endTime"/> is the end of the last period — for an automatic
     /// stop that's the scheduled time, not the moment the final prompt gets answered (which
@@ -228,18 +238,21 @@ public sealed class TrackerEngine : IDisposable
         return hourStart.AddSeconds(Math.Floor(elapsed / step) * step);
     }
 
-    public void DeleteEntry(Guid id, string dayKey)
+    /// <summary>Deletes one or more entries — a merged row in the chronological view covers
+    /// several entries.</summary>
+    public void DeleteEntries(IEnumerable<Guid> ids, string dayKey)
     {
+        var set = ids.ToHashSet();
         if (dayKey == CurrentDayKey)
         {
-            Entries.RemoveAll(e => e.Id == id);
+            Entries.RemoveAll(e => set.Contains(e.Id));
             PersistDay();
             RaiseChanged();
         }
         else
         {
             var day = Store.LoadDay(dayKey);
-            day.RemoveAll(e => e.Id == id);
+            day.RemoveAll(e => set.Contains(e.Id));
             Store.SaveDay(dayKey, day);
             RaiseChanged();
         }

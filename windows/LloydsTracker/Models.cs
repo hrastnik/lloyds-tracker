@@ -92,6 +92,11 @@ public sealed class AppSettings
     [JsonPropertyName("lockPauseEnabled")]
     public bool LockPauseEnabled { get; set; } = false;
 
+    /// <summary>Chronological day view: adjacent entries with the same text (one ending
+    /// where the next begins) are shown as a single entry.</summary>
+    [JsonPropertyName("mergeAdjacentEntries")]
+    public bool MergeAdjacentEntries { get; set; } = true;
+
     [JsonPropertyName("promptStyle")]
     public PromptStyle PromptStyle { get; set; } = PromptStyle.Floating;
 
@@ -129,8 +134,54 @@ public sealed class GroupSummary
     public List<(DateTime Start, DateTime End)> Ranges { get; set; } = new();
 }
 
+/// <summary>One row of the chronological view — a single entry, or a run of merged
+/// adjacent entries with the same text.</summary>
+public sealed class ChronoRow
+{
+    public List<Guid> Ids { get; set; } = new();
+    public DateTime Start { get; set; }
+    public DateTime End { get; set; }
+    public string Text { get; set; } = "";
+    public EntryKind Kind { get; set; }
+
+    public double Duration => (End - Start).TotalSeconds;
+    public bool IsMerged => Ids.Count > 1;
+}
+
 internal static class Summarize
 {
+    /// <summary>Chronological list of entries. With <paramref name="merging"/>, adjacent
+    /// entries of the same text and kind — where one ends as the next begins — form a single
+    /// row (14:45–15:00 + 15:00–15:15 → 14:45–15:15). Only immediate neighbours merge, so a
+    /// pause or a different description breaks the run.</summary>
+    public static List<ChronoRow> Chronology(IEnumerable<Entry> entries, bool merging)
+    {
+        var rows = new List<ChronoRow>();
+        foreach (var e in entries.OrderBy(x => x.Start))
+        {
+            string text = e.Text.Trim();
+            var last = rows.Count > 0 ? rows[^1] : null;
+            if (merging && last != null && last.Kind == e.Kind && last.Text == text
+                && Math.Abs((e.Start - last.End).TotalSeconds) <= 1)
+            {
+                last.Ids.Add(e.Id);
+                last.End = Max(last.End, e.End);
+            }
+            else
+            {
+                rows.Add(new ChronoRow
+                {
+                    Ids = new List<Guid> { e.Id },
+                    Start = e.Start,
+                    End = e.End,
+                    Text = text,
+                    Kind = e.Kind,
+                });
+            }
+        }
+        return rows;
+    }
+
     /// <summary>Groups work entries by text, merging adjacent ranges of the same text.</summary>
     public static List<GroupSummary> Groups(IEnumerable<Entry> entries)
     {

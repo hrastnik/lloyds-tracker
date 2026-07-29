@@ -14,6 +14,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/LloydsTracker"
 cp Support/Info.plist "$APP/Contents/Info.plist"
 
+# Ikona se crta iz istog koda kao pločica u traci (AppIcon.swift), pa ne mogu razići.
+echo "→ AppIcon.icns"
+swiftc -O Support/IconGen/main.swift \
+  Sources/LloydsTracker/AppIcon.swift \
+  Sources/LloydsTracker/Theme.swift \
+  -o .build/icongen
+.build/icongen "$APP/Contents/Resources/AppIcon.icns"
+
 codesign --force --sign - "$APP"
 
 echo ""

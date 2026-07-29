@@ -50,6 +50,15 @@ Isto kao macOS verzija:
 3. **Pauziraj** (15/30/60 min ili do nastavka) — vrijeme se bilježi kao pauza.
 4. **Završi dan** → pregled dana (grupirano/kronološki), *Kopiraj pregled* ili *Export CSV*.
 
+### Pregled dana
+
+U tabu **Kronološki** opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
+prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
+`Mamic web 15:00–15:15` postaje `Mamic web 14:45–15:15`, s oznakom koliko je blokova
+spojeno (`2×`). Spajaju se samo neposredni susjedi (jedan završava kad drugi počinje), pa
+pauza ili drugi opis između prekida niz. Brisanje spojenog reda briše sve njegove blokove.
+Postavka se pamti.
+
 ### Odsutnost
 
 Dvije neovisne opcije, **obje po defaultu isključene**:
@@ -74,6 +83,9 @@ prazni — i nudi produženje **+15 / +30 / +45 / +1 h** (na svakom gumbu piše 
 *Zaustavi sad*. Produženje vrijedi **samo za taj dan**; postavka ostaje nepromijenjena, a
 minutu prije novog vremena upozorenje se ponovi.
 
+Zaustavljanje u toj zadnjoj minuti (*Zaustavi sad* ili *Završi dan* iz popovera) bilježi zadnji
+period **do zakazanog vremena** — dan uvijek završi na 17:00, a ne na 16:59.
+
 Ako se ne reagira, dan se zatvara: zadnji period završava u zakazano vrijeme (ne u trenutak
 kad se odgovori na zadnji prompt), pa unosi ostaju ispravni i kad se odgovori sljedeći dan.
 Ako je u tom trenutku aktivna odsutnost (idle/zaključan ekran), to razdoblje se bilježi kao
@@ -94,6 +106,7 @@ Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave (autostart) | isključeno |
 | Podsjetnik kod pokretanja (pop-up) | uključeno |
+| Spoji susjedne unose istog naziva (toggle u *Pregled dana → Kronološki*) | uključeno |
 
 **Pokreni kod prijave** upisuje/briše vrijednost u
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (bez admin prava).
@@ -118,6 +131,7 @@ macOS verzijom. CSV export: `start,end,minutes,text,kind`.
 windows/LloydsTracker/
 ├── Program.cs                # entry point: single-instance mutex + tray context
 ├── TrayApplicationContext.cs # NotifyIcon, ikone stanja, prozori
+├── TrayIconFactory.cs        # GDI brand pločica: tray ikone po stanju + ikona prozora
 ├── MenuBarPopover.cs         # popover iz traya (status, kontrole, unosi, footer)
 ├── TrackerEngine.cs          # stanje, 1s timer, prompt logika, idle/pauze, autostart
 ├── PromptForm.cs             # floating panel / fullscreen prompt + text polja
@@ -146,5 +160,6 @@ windows/LloydsTracker/
 | `SMAppService` (launch at login) | `HKCU\...\Run` registry |
 | `~/Library/Application Support/LloydsTracker` | `%APPDATA%\LloydsTracker` |
 | SF Symbols (clock/pause/moon) | GDI-crtane tray ikone po stanju |
+| `AppIcon.icns` + `.accessory`/`.regular` (Cmd+Tab) | `Form.Icon` (prozori su ionako u Alt+Tab) |
 | `NSSound("Glass")` | `SystemSounds.Asterisk` |
 ```

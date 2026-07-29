@@ -23,6 +23,7 @@ internal sealed class SummaryForm : Form
     private FlatButton _copyButton = null!;
     private FlatButton _groupedTab = null!;
     private FlatButton _chronoTab = null!;
+    private FlatButton _mergeToggle = null!;
 
     private string DayKey => Store.DayKey(_date);
     private IReadOnlyList<Entry> Entries => DayKey == _engine.CurrentDayKey ? _engine.Entries : Store.LoadDay(DayKey);
@@ -31,6 +32,8 @@ internal sealed class SummaryForm : Form
     {
         _engine = engine;
         Text = "Pregled dana";
+        // Brand tile in the title bar / taskbar / Alt+Tab, like the macOS AppIcon.
+        Icon = TrayIconFactory.Window;
         MinimumSize = new Size(Brand.S(520), Brand.S(440));
         ClientSize = new Size(Brand.S(560), Brand.S(520));
         StartPosition = FormStartPosition.CenterScreen;
@@ -93,6 +96,24 @@ internal sealed class SummaryForm : Form
         _groupedTab.Anchor = _chronoTab.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _header.Controls.Add(_groupedTab);
         _header.Controls.Add(_chronoTab);
+
+        // Merging is a persisted setting, but it's toggled here since it only affects the
+        // chronological view.
+        _mergeToggle = new FlatButton
+        {
+            Font = Brand.Ui(9f, FontStyle.Bold),
+            CornerRadius = 6,
+            BackColor = Palette.Black,
+            Align = ContentAlignment.MiddleLeft,
+            Size = new Size(Brand.S(260), Brand.S(24)),
+            Location = new Point(Brand.S(16), Brand.S(90)),
+        };
+        _mergeToggle.Click += (_, _) =>
+        {
+            _engine.MutateSettings(s => s.MergeAdjacentEntries = !s.MergeAdjacentEntries);
+            Rebuild();
+        };
+        _header.Controls.Add(_mergeToggle);
     }
 
     private Label MakeBadge(string label, Color color, Point loc)
@@ -168,6 +189,16 @@ internal sealed class SummaryForm : Form
         StyleTab(_chronoTab, !grouped);
         PositionTabs();
 
+        // The merge toggle only applies to the chronological view — the header grows by its row.
+        bool merge = _engine.Settings.MergeAdjacentEntries;
+        _mergeToggle.Visible = !grouped;
+        _mergeToggle.Text = (merge ? "☑" : "☐") + "  Spoji susjedne unose istog naziva";
+        _mergeToggle.Width = TextRenderer.MeasureText(_mergeToggle.Text, _mergeToggle.Font).Width + Brand.S(24);
+        _mergeToggle.TextColor = merge ? Palette.Yellow : Palette.Gray;
+        _mergeToggle.Fill = Palette.White.OverBlack(merge ? 0.06 : 0.03);
+        _mergeToggle.Invalidate();
+        _header.Height = Brand.S(grouped ? 108 : 128);
+
         LayoutContent();
     }
 
@@ -206,8 +237,8 @@ internal sealed class SummaryForm : Form
         }
         else
         {
-            foreach (var entry in entries)
-                y = AddChronoRow(entry, y, width);
+            foreach (var row in Summarize.Chronology(entries, _engine.Settings.MergeAdjacentEntries))
+                y = AddChronoRow(row, y, width);
         }
         _content.ResumeLayout(true);
     }
@@ -230,7 +261,7 @@ internal sealed class SummaryForm : Form
         return y + Brand.S(52) + Brand.S(8);
     }
 
-    private int AddChronoRow(Entry entry, int y, int width)
+    private int AddChronoRow(ChronoRow entry, int y, int width)
     {
         bool pause = entry.Kind == EntryKind.Pause;
         var fill = Palette.White.OverBlack(0.03);
@@ -240,14 +271,24 @@ internal sealed class SummaryForm : Form
         row.Controls.Add(time);
 
         var del = new FlatButton { Text = "✕", TextColor = Palette.Gray.With(0.6), Font = Brand.Ui(8f, FontStyle.Bold), BackColor = fill, Size = new Size(Brand.S(22), Brand.S(22)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(width - Brand.S(8) - Brand.S(22), Brand.S(4)) };
-        del.Click += (_, _) => { _engine.DeleteEntry(entry.Id, DayKey); Rebuild(); };
+        del.Click += (_, _) => { _engine.DeleteEntries(entry.Ids, DayKey); Rebuild(); };
         row.Controls.Add(del);
 
         var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8.5f), ForeColor = Palette.Gray.With(0.7), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
         dur.Location = new Point(del.Left - Brand.S(8) - dur.PreferredWidth, Brand.S(7));
         row.Controls.Add(dur);
 
-        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(time.Right + Brand.S(10), Brand.S(7)), Size = new Size(dur.Left - Brand.S(8) - (time.Right + Brand.S(10)), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        int textRight = dur.Left - Brand.S(8);
+        if (entry.IsMerged)
+        {
+            var count = new Label { AutoSize = true, Text = $"{entry.Ids.Count}×", Font = Brand.Mono(8f, FontStyle.Bold), ForeColor = Palette.Yellow.With(0.6), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+            count.Location = new Point(dur.Left - Brand.S(8) - count.PreferredWidth, Brand.S(7));
+            row.Controls.Add(count);
+            textRight = count.Left - Brand.S(8);
+        }
+
+        int textLeft = time.Right + Brand.S(10);
+        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(textLeft, Brand.S(7)), Size = new Size(Math.Max(Brand.S(20), textRight - textLeft), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         row.Controls.Add(text);
 
         _content.Controls.Add(row);

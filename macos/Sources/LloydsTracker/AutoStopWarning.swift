@@ -56,10 +56,8 @@ final class AutoStopWarningController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = hosting
         panel.setContentSize(size)
-        if let screen = NSScreen.main {
-            let f = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.minY + 24))
-        }
+        let f = PromptController.promptScreen().visibleFrame
+        panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.minY + 24))
         panel.isReleasedWhenClosed = false
         panel.makeKeyAndOrderFront(nil)
         window = panel
@@ -135,7 +133,8 @@ struct AutoStopWarningView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 10, weight: .bold))
-                    Text("Zaustavi sad")
+                    // Period se i tako bilježi do zakazanog vremena, pa to piše na gumbu.
+                    Text("Zaustavi sad — bilježi do \(Fmt.hhmm(stopAt))")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity)

@@ -72,8 +72,40 @@ struct SummaryView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 200)
             }
+
+            if mode == .chronological {
+                HStack {
+                    mergeToggle
+                    Spacer()
+                }
+            }
         }
         .padding(16)
+    }
+
+    /// Spajanje susjednih unosa je postavka (pamti se), ali se toggle-a ovdje jer vrijedi
+    /// samo za kronološki prikaz.
+    private var mergeToggle: some View {
+        let on = engine.settings.mergeAdjacentEntries
+        return Button {
+            engine.settings.mergeAdjacentEntries.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: on ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 12, weight: .bold))
+                Text("Spoji susjedne unose istog naziva")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(on ? Color.lloydsYellow : Color.lloydsGray)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.white.opacity(on ? 0.06 : 0.03))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("14:45–15:00 + 15:00–15:15 istog naziva prikazuje se kao 14:45–15:15")
     }
 
     private func badge(_ label: String, _ value: String, _ color: Color) -> some View {
@@ -100,8 +132,8 @@ struct SummaryView: View {
                         groupRow(group)
                     }
                 case .chronological:
-                    ForEach(entries) { entry in
-                        chronoRow(entry)
+                    ForEach(Summarize.chronology(entries, merging: engine.settings.mergeAdjacentEntries)) { row in
+                        chronoRow(row)
                     }
                 }
             }
@@ -132,28 +164,33 @@ struct SummaryView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
     }
 
-    private func chronoRow(_ entry: Entry) -> some View {
+    private func chronoRow(_ row: ChronoRow) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(Fmt.hhmm(entry.start))–\(Fmt.hhmm(entry.end))")
+            Text("\(Fmt.hhmm(row.start))–\(Fmt.hhmm(row.end))")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.lloydsGray)
-            Text(entry.text)
+            Text(row.text)
                 .font(.system(size: 12))
-                .italic(entry.kind == .pause)
-                .foregroundStyle(entry.kind == .pause ? Color.lloydsGray.opacity(0.6) : .white)
+                .italic(row.kind == .pause)
+                .foregroundStyle(row.kind == .pause ? Color.lloydsGray.opacity(0.6) : .white)
             Spacer()
-            Text(Fmt.dur(entry.duration))
+            if row.isMerged {
+                Text("\(row.ids.count)×")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color.lloydsYellow.opacity(0.6))
+            }
+            Text(Fmt.dur(row.duration))
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.lloydsGray.opacity(0.7))
             Button {
-                engine.deleteEntry(id: entry.id, dayKey: dayKey)
+                engine.deleteEntries(ids: row.ids, dayKey: dayKey)
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 10))
                     .foregroundStyle(Color.lloydsGray.opacity(0.5))
             }
             .buttonStyle(.plain)
-            .help("Obriši unos")
+            .help(row.isMerged ? "Obriši unos (\(row.ids.count) bloka)" : "Obriši unos")
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 10)

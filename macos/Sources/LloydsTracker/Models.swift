@@ -39,6 +39,9 @@ struct AppSettings: Codable, Equatable {
     /// Zaključan ekran → razdoblje odsutnosti se bilježi kao pauza.
     var lockPauseEnabled: Bool = false
     var historyLimit: Int = 15
+    /// Kronološki pregled dana: susjedni unosi istog naziva (jedan završava kad drugi
+    /// počinje) prikazuju se kao jedan unos.
+    var mergeAdjacentEntries: Bool = true
     var launchAtLogin: Bool = false
     var showStartupReminder: Bool = true
     /// Automatsko zaustavljanje trackinga u zadano vrijeme — da tracking ne ostane
@@ -61,6 +64,7 @@ struct AppSettings: Codable, Equatable {
         idleThresholdMinutes = try c.decodeIfPresent(Int.self, forKey: .idleThresholdMinutes) ?? d.idleThresholdMinutes
         lockPauseEnabled = try c.decodeIfPresent(Bool.self, forKey: .lockPauseEnabled) ?? d.lockPauseEnabled
         historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit) ?? d.historyLimit
+        mergeAdjacentEntries = try c.decodeIfPresent(Bool.self, forKey: .mergeAdjacentEntries) ?? d.mergeAdjacentEntries
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
         showStartupReminder = try c.decodeIfPresent(Bool.self, forKey: .showStartupReminder) ?? d.showStartupReminder
         autoStopEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoStopEnabled) ?? d.autoStopEnabled
@@ -100,7 +104,42 @@ struct GroupSummary: Identifiable {
     var ranges: [(start: Date, end: Date)]
 }
 
+/// Red kronološkog pregleda — jedan unos ili niz spojenih susjednih unosa istog naziva.
+struct ChronoRow: Identifiable {
+    var ids: [UUID]
+    var start: Date
+    var end: Date
+    var text: String
+    var kind: EntryKind
+
+    var id: UUID { ids[0] }
+    var duration: TimeInterval { end.timeIntervalSince(start) }
+    var isMerged: Bool { ids.count > 1 }
+}
+
 enum Summarize {
+    /// Kronološki popis unosa. Uz `merging` susjedni unosi istog naziva i vrste, gdje
+    /// jedan završava kad drugi počinje, čine jedan red (14:45–15:00 + 15:00–15:15 →
+    /// 14:45–15:15). Spajaju se samo neposredni susjedi, pa pauza ili drugi opis između
+    /// prekida niz.
+    static func chronology(_ entries: [Entry], merging: Bool) -> [ChronoRow] {
+        var rows: [ChronoRow] = []
+        for e in entries.sorted(by: { $0.start < $1.start }) {
+            let text = e.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if merging, var last = rows.last,
+               last.kind == e.kind,
+               last.text == text,
+               abs(e.start.timeIntervalSince(last.end)) <= 1 {
+                last.ids.append(e.id)
+                last.end = max(last.end, e.end)
+                rows[rows.count - 1] = last
+            } else {
+                rows.append(ChronoRow(ids: [e.id], start: e.start, end: e.end, text: text, kind: e.kind))
+            }
+        }
+        return rows
+    }
+
     /// Grupira work unose po tekstu, spaja susjedne intervale istog teksta.
     static func groups(from entries: [Entry]) -> [GroupSummary] {
         let work = entries.filter { $0.kind == .work }.sorted { $0.start < $1.start }

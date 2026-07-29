@@ -28,8 +28,78 @@ final class PromptModel: ObservableObject {
 final class PromptController {
     private var window: NSWindow?
     private var model: PromptModel?
+    private var style: PromptStyle = .floating
+    private var screenParamsObserver: (any NSObjectProtocol)?
+    private var unlockObserver: (any NSObjectProtocol)?
 
     var isVisible: Bool { window != nil }
+
+    init() {
+        // Raspored ekrana se može promijeniti dok prompt stoji otvoren (uspavan/odspojen
+        // vanjski monitor, otključavanje laptopa) — fullscreen prozor tad ostane u
+        // dimenzijama starog ekrana, pa ga treba ponovno prilijepiti na aktualni.
+        screenParamsObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refitToScreenSoon() }
+        }
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: .init("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refitToScreenSoon() }
+        }
+    }
+
+    deinit {
+        if let screenParamsObserver { NotificationCenter.default.removeObserver(screenParamsObserver) }
+        if let unlockObserver { DistributedNotificationCenter.default().removeObserver(unlockObserver) }
+    }
+
+    /// Ekran na kojem prompt treba biti. `NSScreen.main` je nepouzdan dok je ekran
+    /// zaključan ili je vanjski monitor uspavan (vrati ekran na kojem prozor neće
+    /// završiti), pa prvo gledamo gdje je miš.
+    static func promptScreen() -> NSScreen {
+        let mouse = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) {
+            return screen
+        }
+        return NSScreen.main ?? NSScreen.screens[0]
+    }
+
+    /// Nakon promjene ekrana koordinate se slegnu s malim zakašnjenjem.
+    private func refitToScreenSoon() {
+        guard window != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            Task { @MainActor in self?.refitToScreen() }
+        }
+    }
+
+    /// Fullscreen prompt drži točno preko jednog ekrana; floating panel vrati unutar
+    /// vidljivog okvira ako je ostao izvan ekrana.
+    private func refitToScreen() {
+        guard let window else { return }
+        switch style {
+        case .fullscreen:
+            let screen = window.screen ?? Self.promptScreen()
+            if window.frame != screen.frame {
+                window.setFrame(screen.frame, display: true, animate: false)
+            }
+        case .floating:
+            let visible = (window.screen ?? Self.promptScreen()).visibleFrame
+            var frame = window.frame
+            frame.size.width = min(frame.width, visible.width)
+            frame.size.height = min(frame.height, visible.height)
+            frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
+            if frame != window.frame {
+                window.setFrame(frame, display: true, animate: false)
+            }
+        }
+    }
 
     func show(
         request: PromptRequest,
@@ -42,6 +112,7 @@ final class PromptController {
 
         let model = PromptModel(start: request.start, end: request.end ?? Date())
         self.model = model
+        self.style = style
 
         let view = PromptView(
             request: request,
@@ -79,16 +150,14 @@ final class PromptController {
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.contentView = hosting
             panel.setContentSize(size)
-            if let screen = NSScreen.main {
-                let f = screen.visibleFrame
-                panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
-            }
+            let f = Self.promptScreen().visibleFrame
+            panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
             panel.isReleasedWhenClosed = false
             panel.makeKeyAndOrderFront(nil)
             window = panel
 
         case .fullscreen:
-            let screen = NSScreen.main ?? NSScreen.screens[0]
+            let screen = Self.promptScreen()
             let win = KeyableWindow(
                 contentRect: screen.frame,
                 styleMask: [.borderless],
@@ -104,7 +173,13 @@ final class PromptController {
             win.isReleasedWhenClosed = false
             NSApp.activate(ignoringOtherApps: true)
             win.makeKeyAndOrderFront(nil)
+            // Prompt se često otvori dok je ekran zaključan; AppKit prozor tad može
+            // smjestiti na drugi ekran nego što je zatražen, pa nakon otključavanja
+            // ostane u dimenzijama vanjskog monitora. Frame se zato postavlja izričito
+            // i ponovno provjerava kad se ekrani slegnu.
+            win.setFrame(screen.frame, display: true)
             window = win
+            refitToScreenSoon()
         }
     }
 

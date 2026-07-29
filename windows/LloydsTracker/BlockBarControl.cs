@@ -9,6 +9,11 @@ internal static class PromptGeometry
 {
     private static DateTime HourStart(DateTime d) => new(d.Year, d.Month, d.Day, d.Hour, 0, 0, d.Kind);
 
+    /// <summary>The screen a prompt/pop-up belongs on — the one with the cursor, which stays
+    /// right when a monitor is asleep, disconnected or the session was locked. Mirrors the
+    /// macOS PromptController.promptScreen().</summary>
+    public static Screen PromptScreen() => Screen.FromPoint(Cursor.Position) ?? Screen.PrimaryScreen!;
+
     /// <summary>5-min grid points strictly inside the period (min. 2 min from the edges).
     /// For very long periods the grid is thinned so there are never more than ~12 blocks.</summary>
     public static List<DateTime> GridBoundaries(DateTime start, DateTime end)

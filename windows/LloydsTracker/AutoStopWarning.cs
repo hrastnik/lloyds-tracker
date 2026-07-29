@@ -140,7 +140,8 @@ internal sealed class AutoStopWarningForm : Form
 
         var stopNow = new FlatButton
         {
-            Text = "Zaustavi sad",
+            // The period is recorded up to the scheduled time either way, so the button says so.
+            Text = $"Zaustavi sad — bilježi do {Fmt.Hhmm(_stopAt)}",
             TextColor = Palette.Gray,
             BorderColor = Palette.White.OverBlack(0.2),
             BorderWidth = 1,
@@ -157,7 +158,7 @@ internal sealed class AutoStopWarningForm : Form
         ClientSize = new Size(ClientSize.Width, y);
 
         // Bottom-right corner — the prompt sits top-right, so the two never overlap.
-        var wa = Screen.PrimaryScreen!.WorkingArea;
+        var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Bottom - Height - Brand.S(24));
         Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
 

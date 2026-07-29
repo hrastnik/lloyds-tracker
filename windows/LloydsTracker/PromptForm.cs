@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace LloydsTracker;
 
@@ -594,8 +595,7 @@ internal sealed class PromptForm : Form
 
     private void BuildFullscreenChrome()
     {
-        var screen = Screen.FromPoint(Cursor.Position) ?? Screen.PrimaryScreen!;
-        Bounds = screen.Bounds;
+        Bounds = PromptGeometry.PromptScreen().Bounds;
 
         _cardPanel = new CardPanel
         {
@@ -651,7 +651,7 @@ internal sealed class PromptForm : Form
 
         if (_floatRight == 0)
         {
-            var wa = Screen.PrimaryScreen!.WorkingArea;
+            var wa = PromptGeometry.PromptScreen().WorkingArea;
             _floatRight = wa.Right - Brand.S(24);
             _floatTop = wa.Top + Brand.S(24);
         }
@@ -696,6 +696,53 @@ internal sealed class PromptForm : Form
         base.OnShown(e);
         Relayout();
         BeginInvoke(new Action(() => FocusFieldAt(_periodStart)));
+        // The prompt often opens while the session is locked or a monitor is asleep; the
+        // screen layout can then change under it and the fullscreen form keeps the old
+        // screen's size. Re-stick it to the current screen whenever that happens.
+        SystemEvents.DisplaySettingsChanged += OnScreensChanged;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        _screenHooked = true;
+    }
+
+    private bool _screenHooked;
+
+    private void OnScreensChanged(object? sender, EventArgs e) => RefitToScreen();
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
+    {
+        if (e.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.ConsoleConnect
+            or SessionSwitchReason.RemoteConnect)
+            RefitToScreen();
+    }
+
+    /// <summary>Fullscreen prompt covers exactly one screen; the floating panel is pulled back
+    /// inside the working area if it ended up off-screen. Mirrors PromptController.refitToScreen.</summary>
+    private void RefitToScreen()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired) { BeginInvoke(new Action(RefitToScreen)); return; }
+
+        var screen = Screen.FromControl(this);
+        if (_big)
+        {
+            if (Bounds != screen.Bounds)
+            {
+                Bounds = screen.Bounds;
+                LayoutFullscreen();
+            }
+        }
+        else
+        {
+            var wa = screen.WorkingArea;
+            int left = Math.Min(Math.Max(Left, wa.Left), Math.Max(wa.Left, wa.Right - Width));
+            int top = Math.Min(Math.Max(Top, wa.Top), Math.Max(wa.Top, wa.Bottom - Height));
+            if (left != Left || top != Top)
+            {
+                _floatRight = left + Width;
+                _floatTop = top;
+                Location = new Point(left, top);
+            }
+        }
     }
 
     // MARK: - Produženje perioda
@@ -754,4 +801,15 @@ internal sealed class PromptForm : Form
     }
 
     private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && _screenHooked)
+        {
+            SystemEvents.DisplaySettingsChanged -= OnScreensChanged;
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            _screenHooked = false;
+        }
+        base.Dispose(disposing);
+    }
 }

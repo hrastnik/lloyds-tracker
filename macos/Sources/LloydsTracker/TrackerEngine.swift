@@ -113,7 +113,15 @@ final class TrackerEngine: ObservableObject {
     }
 
     func stop() {
-        stop(at: Date())
+        let now = Date()
+        // Zaustavljanje u zadnjoj minuti prije auto-stopa (klik u upozorenju ili u meniju)
+        // bilježi period do zakazanog vremena — inače dan završi minutu prije postavke
+        // (npr. 16:59:46 umjesto 17:00).
+        if let scheduled = autoStopAt, scheduled > now, scheduled.timeIntervalSince(now) <= autoStopLead {
+            stop(at: scheduled)
+        } else {
+            stop(at: now)
+        }
     }
 
     /// `endTime` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
@@ -215,13 +223,15 @@ final class TrackerEngine: ObservableObject {
         return hourStart.addingTimeInterval(floor(elapsed / step) * step)
     }
 
-    func deleteEntry(id: UUID, dayKey: String) {
+    /// Briše jedan ili više unosa — spojeni red u kronološkom pregledu pokriva više unosa.
+    func deleteEntries(ids: [UUID], dayKey: String) {
+        let set = Set(ids)
         if dayKey == currentDayKey {
-            entries.removeAll { $0.id == id }
+            entries.removeAll { set.contains($0.id) }
             persistDay()
         } else {
             var day = Store.loadDay(dayKey)
-            day.removeAll { $0.id == id }
+            day.removeAll { set.contains($0.id) }
             Store.saveDay(dayKey, entries: day)
             objectWillChange.send()
         }

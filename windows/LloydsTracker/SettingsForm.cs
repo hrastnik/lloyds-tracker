@@ -26,6 +26,8 @@ internal sealed class SettingsForm : Form
     {
         _engine = engine;
         Text = "Postavke";
+        // Brand tile in the title bar / taskbar / Alt+Tab, like the macOS AppIcon.
+        Icon = TrayIconFactory.Window;
         // Width is final from the start (control widths derive from it); the height is set
         // below, once the pages have been measured.
         ClientSize = new Size(Brand.S(460), Brand.S(200));
