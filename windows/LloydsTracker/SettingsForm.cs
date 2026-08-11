@@ -20,6 +20,8 @@ internal sealed class SettingsForm : Form
     private ComboBox _workdayStartHour = null!;
     private ComboBox _workdayStartMinute = null!;
     private CheckBox _workdayBackfill = null!;
+    private Label _workdayReminderCaption = null!;
+    private Label _workdayBackfillCaption = null!;
     private Label _launchStatus = null!;
 
     private readonly List<FlatButton> _pills = new();
@@ -136,11 +138,21 @@ internal sealed class SettingsForm : Form
             _workdayBackfill.Enabled = v;
         });
 
+        _workdayReminderCaption = Caption(WorkdayReminderCaption());
+        Gap(6);
+
         (_workdayStartHour, _workdayStartMinute) = LabeledTimeCombos(
             "Vrijeme",
             _engine.Settings.WorkdayStartHour,
             _engine.Settings.WorkdayStartMinute,
-            (h, m) => _engine.MutateSettings(s => { s.WorkdayStartHour = h; s.WorkdayStartMinute = m; }));
+            (h, m) =>
+            {
+                _engine.MutateSettings(s => { s.WorkdayStartHour = h; s.WorkdayStartMinute = m; });
+                // The captions name the configured time, so they follow the pickers. Both
+                // strings keep their length (HH:mm), so no re-layout is needed.
+                _workdayReminderCaption.Text = WorkdayReminderCaption();
+                _workdayBackfillCaption.Text = WorkdayBackfillCaption();
+            });
         _workdayStartHour.Enabled = _engine.Settings.WorkdayStartEnabled;
         _workdayStartMinute.Enabled = _engine.Settings.WorkdayStartEnabled;
 
@@ -148,8 +160,29 @@ internal sealed class SettingsForm : Form
             v => _engine.MutateSettings(s => s.WorkdayStartBackfillEnabled = v));
         _workdayBackfill.Enabled = _engine.Settings.WorkdayStartEnabled;
 
-        Caption("Pop-up iskoči u zadano vrijeme, a ako je računalo tada spavalo — čim ga probudiš (npr. u 9:30). Uz nadoknadu nudi i start od zadanog vremena, pa te prvi prompt pita i za jutro.");
+        _workdayBackfillCaption = Caption(WorkdayBackfillCaption());
         Gap(8);
+    }
+
+    private string WorkdayReminderCaption()
+        => $"Svaki dan u {WorkdayClock(0)} iskoči pop-up i pita želiš li pokrenuti radni dan — ali samo ako tracking već nije aktivan. "
+            + $"Ako je računalo u {WorkdayClock(0)} bilo ugašeno ili je spavalo, podsjetnik ne propada: iskoči čim ga probudiš. Javlja se jednom dnevno.";
+
+    private string WorkdayBackfillCaption()
+        => $"Određuje što pop-up nudi kad ga otvoriš nakon {WorkdayClock(0)}. "
+            + $"Uključeno: gumb „Start od {WorkdayClock(0)}” upisuje dan od {WorkdayClock(0)}, pa te prvi prompt pita što si radio od {WorkdayClock(0)} do sada "
+            + $"— npr. probudiš laptop u {WorkdayClock(75)} i prompt te pita za {WorkdayClock(0)}–{WorkdayClock(75)}. Uz njega ostaje i „Počni tek od sada”. "
+            + "Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.";
+
+    /// <summary>The configured workday start, <paramref name="offsetMinutes"/> later, as
+    /// HH:mm — the same format as the reminder's "Start od 08:30" button. The +75 min
+    /// variant is the wake-up time in the backfill example, so it stays sensible when the
+    /// start is moved (10:00 → 11:15).</summary>
+    private string WorkdayClock(int offsetMinutes)
+    {
+        int m = (_engine.Settings.WorkdayStartHour * 60 + _engine.Settings.WorkdayStartMinute + offsetMinutes) % 1440;
+        if (m < 0) m += 1440;
+        return $"{m / 60:D2}:{m % 60:D2}";
     }
 
     private void BuildAutoStopSection()
@@ -358,12 +391,13 @@ internal sealed class SettingsForm : Form
         return box;
     }
 
-    private void Caption(string text)
+    private Label Caption(string text)
     {
         var label = new Label { AutoSize = false, Text = text, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
         label.Height = MeasureWrap(text, label.Font, label.Width);
         _stack.Controls.Add(label);
         _y += label.Height + Brand.S(4);
+        return label;
     }
 
     private void Gap(int px) => _y += Brand.S(px);

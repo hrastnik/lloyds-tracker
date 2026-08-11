@@ -6,8 +6,9 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var engine: TrackerEngine
 
-    /// Visina odabrana da najviši tab ("Radni dan") stane bez scrollanja.
-    private let contentHeight: CGFloat = 670
+    /// Visina odabrana da najviši tab ("Radni dan") stane bez scrollanja — izmjereno
+    /// `NSHostingView.fittingSize`-om tog taba (754), plus par piksela zraka.
+    private let contentHeight: CGFloat = 756
 
     var body: some View {
         TabView {
@@ -46,9 +47,7 @@ struct SettingsView: View {
                         Text("\(n)").tag(n)
                     }
                 }
-                Text("Koliko se nedavnih unosa pamti za pre-fill i listanje (↑/↓) u promptu.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Koliko se nedavnih unosa pamti za pre-fill i listanje (↑/↓) u promptu.")
             }
         }
         .formStyle(.grouped)
@@ -58,22 +57,19 @@ struct SettingsView: View {
         Form {
             Section("Početak radnog dana") {
                 Toggle("Podsjetnik u zadano vrijeme", isOn: $engine.settings.workdayStartEnabled)
+                caption("Svaki dan u \(workdayStartClock) iskoči pop-up i pita želiš li pokrenuti radni dan — ali samo ako tracking već nije aktivan. Ako je računalo u \(workdayStartClock) bilo ugašeno ili je spavalo, podsjetnik ne propada: iskoči čim ga probudiš. Javlja se jednom dnevno.")
                 DatePicker("Vrijeme", selection: workdayStartTime, displayedComponents: .hourAndMinute)
                     .disabled(!engine.settings.workdayStartEnabled)
                 Toggle("Ponudi i nadoknadu od tog vremena", isOn: $engine.settings.workdayStartBackfillEnabled)
                     .disabled(!engine.settings.workdayStartEnabled)
-                Text("Pop-up iskoči u zadano vrijeme, a ako je računalo tada spavalo — čim ga probudiš (npr. u 9:30). Uz nadoknadu nudi i start od zadanog vremena, pa te prvi prompt pita i za jutro.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prvi prompt pita što si radio od \(workdayStartClock) do sada — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample). Uz njega ostaje i „Počni tek od sada”. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
             }
 
             Section("Automatsko zaustavljanje") {
                 Toggle("Zaustavi tracking u zadano vrijeme", isOn: $engine.settings.autoStopEnabled)
                 DatePicker("Vrijeme", selection: autoStopTime, displayedComponents: .hourAndMinute)
                     .disabled(!engine.settings.autoStopEnabled)
-                Text("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut preko noći.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut preko noći.")
             }
 
             Section("Odsutnost") {
@@ -85,9 +81,7 @@ struct SettingsView: View {
                 }
                 .disabled(!engine.settings.idleDetectionEnabled)
                 Toggle("Bilježi pauzu kad je ekran zaključan", isOn: $engine.settings.lockPauseEnabled)
-                Text("Uključeno: razdoblje odsutnosti se bilježi kao pauza, a prompt čeka da se vratiš. Isključeno: prompt te u zakazano vrijeme samo pita što si radio.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Uključeno: razdoblje odsutnosti se bilježi kao pauza, a prompt čeka da se vratiš. Isključeno: prompt te u zakazano vrijeme samo pita što si radio.")
             }
         }
         .formStyle(.grouped)
@@ -103,9 +97,7 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Toggle("Podsjetnik kod pokretanja (pop-up)", isOn: $engine.settings.showStartupReminder)
-                Text("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.")
             }
 
             Section("Podaci") {
@@ -124,6 +116,31 @@ struct SettingsView: View {
     }
 
     // MARK: - Pomoćno
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Postavljeno vrijeme početka radnog dana u opisima opcija — tako opis govori o
+    /// konkretnom satu ("Start od 08:30"), a ne o apstraktnom "zadanom vremenu". Isti
+    /// `HH:mm` format kao gumb u podsjetniku (`Fmt.hhmm`), da se tekstovi poklapaju.
+    private var workdayStartClock: String {
+        Self.clock(minutesOfDay: engine.settings.workdayStartHour * 60 + engine.settings.workdayStartMinute)
+    }
+
+    /// Vrijeme buđenja laptopa u primjeru nadoknade — 1 h 15 min nakon početka radnog
+    /// dana, da primjer ostane smislen i kad je početak pomaknut (npr. 10:00 → 11:15).
+    private var workdayStartExample: String {
+        Self.clock(minutesOfDay: engine.settings.workdayStartHour * 60 + engine.settings.workdayStartMinute + 75)
+    }
+
+    private static func clock(minutesOfDay: Int) -> String {
+        let m = ((minutesOfDay % 1440) + 1440) % 1440
+        return String(format: "%02d:%02d", m / 60, m % 60)
+    }
 
     private var autoStopTime: Binding<Date> {
         timeBinding(hour: \.autoStopHour, minute: \.autoStopMinute)
