@@ -38,6 +38,10 @@ final class TrackerEngine: ObservableObject {
     private var autoStopWarningShown = false
     /// Koliko prije automatskog zaustavljanja iskoči upozorenje.
     private let autoStopLead: TimeInterval = 60
+    /// Dan (dayKey) za koji je podsjetnik na početak radnog dana odrađen — prikazan ili
+    /// je dan u međuvremenu pokrenut. Drži se u memoriji: kod restarta aplikacije ulogu
+    /// ionako preuzima podsjetnik kod pokretanja.
+    private var workdayReminderDayKey: String?
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
@@ -78,28 +82,27 @@ final class TrackerEngine: ObservableObject {
     /// dan još nije pokrenut (da se ne zaboravi startati tracking).
     func showStartupReminderIfNeeded() {
         guard settings.showStartupReminder, !isTracking, !prompt.isVisible else { return }
-        startupReminder.show(
-            dayTitle: Fmt.dayTitle.string(from: Date()),
-            onStart: { [weak self] in self?.start() },
-            onDismiss: {}
-        )
+        presentStartReminder(now: Date())
     }
 
     // MARK: - Kontrole
 
-    func start() {
+    /// `backfillFrom` (iz podsjetnika na početak radnog dana) pomiče početak trackanja
+    /// unatrag — prvi prompt onda pita za cijelo jutro, npr. 8:30–9:45.
+    func start(from backfillFrom: Date? = nil) {
         let now = Date()
         currentDayKey = Store.dayKey(now)
         entries = Store.loadDay(currentDayKey)
         sessionStart = now
+        workdayReminderDayKey = currentDayKey
 
         // Trackaj od početka trenutnog intervala (npr. start u 9:56 uz 15 min → od 9:45).
-        // Ako nakon početka intervala već postoji neki unos, kreni od početka trenutnog
-        // 5-min bloka (i nikad prije kraja zadnjeg unosa) da ne nastane dupli zapis.
-        let intervalStart = Self.gridFloor(now, step: interval)
-        var coverFrom = intervalStart
-        if let latestEnd = entries.map(\.end).max(), latestEnd > intervalStart {
-            coverFrom = max(Self.gridFloor(now, step: 300), latestEnd)
+        // Ako nakon toga već postoji neki unos, kreni od kraja zadnjeg unosa — kod
+        // nadoknade da se popuni ostatak jutra, inače od početka trenutnog 5-min bloka
+        // (da ne nastane dupli zapis).
+        var coverFrom = backfillFrom ?? Self.gridFloor(now, step: interval)
+        if let latestEnd = entries.map(\.end).max(), latestEnd > coverFrom {
+            coverFrom = backfillFrom == nil ? max(Self.gridFloor(now, step: 300), latestEnd) : latestEnd
         }
         lastCovered = min(coverFrom, now)
         pauseUntil = nil
@@ -295,11 +298,66 @@ final class TrackerEngine: ObservableObject {
         )
     }
 
+    // MARK: - Početak radnog dana
+
+    /// Početak radnog dana na dan `date` (nil kad je podsjetnik isključen).
+    private func workdayStart(on date: Date) -> Date? {
+        guard settings.workdayStartEnabled else { return nil }
+        return Calendar.current.date(
+            bySettingHour: min(max(settings.workdayStartHour, 0), 23),
+            minute: min(max(settings.workdayStartMinute, 0), 59),
+            second: 0,
+            of: date
+        )
+    }
+
+    /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — nil kad je opcija
+    /// isključena, kad radni dan još nije počeo ili kad je razmak premali da bi se
+    /// nadoknada uopće razlikovala od starta od sada.
+    private func backfillStart(now: Date) -> Date? {
+        guard settings.workdayStartBackfillEnabled,
+              let start = workdayStart(on: now),
+              now.timeIntervalSince(start) >= 300 else { return nil }
+        return start
+    }
+
+    /// Podsjetnik u zadano vrijeme: iskoči kad radni dan počne, a ako je računalo tada
+    /// spavalo — čim se probudi i otključa (timer se nakon buđenja nastavi vrtjeti, pa ga
+    /// uhvati prvi idući tick). Javlja se jednom dnevno.
+    private func checkWorkdayStart(now: Date) {
+        guard settings.workdayStartEnabled, !isTracking, !isLocked,
+              !prompt.isVisible, !startupReminder.isVisible,
+              workdayReminderDayKey != Store.dayKey(now),
+              let start = workdayStart(on: now), now >= start else { return }
+        if settings.soundEnabled {
+            // Za razliku od podsjetnika na pokretanju, ovaj lako iskoči dok nisi za
+            // ekranom (npr. čim se laptop probudi), pa ga prati i zvuk.
+            NSSound(named: "Glass")?.play()
+        }
+        presentStartReminder(now: now)
+    }
+
+    /// Zajednički pop-up za oba podsjetnika (pokretanje aplikacije i početak radnog dana).
+    private func presentStartReminder(now: Date) {
+        // Podsjetnik prikazan prije početka radnog dana ne troši današnji termin — u
+        // zadano vrijeme svejedno iskoči (npr. pokretanje u 7:00, radni dan u 8:30).
+        if let start = workdayStart(on: now), now >= start {
+            workdayReminderDayKey = Store.dayKey(now)
+        }
+        startupReminder.show(
+            dayTitle: Fmt.dayTitle.string(from: now),
+            backfillFrom: backfillStart(now: now),
+            onStart: { [weak self] backfillFrom in self?.start(from: backfillFrom) },
+            onDismiss: {}
+        )
+    }
+
     // MARK: - Tick petlja
 
     private func tick() {
-        guard isTracking else { return }
         let now = Date()
+        checkWorkdayStart(now: now)
+        guard isTracking else { return }
 
         // Prije svega ostalog — auto-stop vrijedi i kad je pauzirano ili se čeka povratak.
         if settings.autoStopEnabled, let stopAt = autoStopAt {
@@ -479,6 +537,16 @@ final class TrackerEngine: ObservableObject {
             autoStopWarning.close()
             autoStopWarningShown = false
             autoStopAt = isTracking ? nextAutoStop(after: Date()) : nil
+        }
+        if old.workdayStartEnabled != settings.workdayStartEnabled
+            || old.workdayStartHour != settings.workdayStartHour
+            || old.workdayStartMinute != settings.workdayStartMinute {
+            // Novo vrijeme vrijedi od idućeg početka radnog dana: ako je današnji već
+            // prošao, danas se više ne javlja — inače bi pop-up iskočio čim se u
+            // postavkama namjesti raniji sat.
+            let now = Date()
+            let started = workdayStart(on: now).map { now >= $0 } ?? false
+            workdayReminderDayKey = started ? Store.dayKey(now) : nil
         }
     }
 

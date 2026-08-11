@@ -106,6 +106,24 @@ public sealed class AppSettings
     [JsonPropertyName("soundEnabled")]
     public bool SoundEnabled { get; set; } = true;
 
+    /// <summary>The reminder also offers a start from the beginning of the work day —
+    /// opening the laptop at 9:30 can then be recorded as work from 8:30 (the morning is
+    /// backfilled).</summary>
+    [JsonPropertyName("workdayStartBackfillEnabled")]
+    public bool WorkdayStartBackfillEnabled { get; set; } = true;
+
+    /// <summary>Reminder for the start of the work day — pops up at the set time, or, if the
+    /// computer was asleep then, as soon as it wakes. A machine that's never shut down would
+    /// otherwise get no reminder, since the launch one only fires when the computer boots.</summary>
+    [JsonPropertyName("workdayStartEnabled")]
+    public bool WorkdayStartEnabled { get; set; } = true;
+
+    [JsonPropertyName("workdayStartHour")]
+    public int WorkdayStartHour { get; set; } = 8;
+
+    [JsonPropertyName("workdayStartMinute")]
+    public int WorkdayStartMinute { get; set; } = 30;
+
     public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }
 

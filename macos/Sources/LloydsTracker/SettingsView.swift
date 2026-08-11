@@ -7,7 +7,7 @@ struct SettingsView: View {
     @ObservedObject var engine: TrackerEngine
 
     /// Visina odabrana da najviši tab ("Radni dan") stane bez scrollanja.
-    private let contentHeight: CGFloat = 470
+    private let contentHeight: CGFloat = 670
 
     var body: some View {
         TabView {
@@ -56,6 +56,17 @@ struct SettingsView: View {
 
     var dayTab: some View {
         Form {
+            Section("Početak radnog dana") {
+                Toggle("Podsjetnik u zadano vrijeme", isOn: $engine.settings.workdayStartEnabled)
+                DatePicker("Vrijeme", selection: workdayStartTime, displayedComponents: .hourAndMinute)
+                    .disabled(!engine.settings.workdayStartEnabled)
+                Toggle("Ponudi i nadoknadu od tog vremena", isOn: $engine.settings.workdayStartBackfillEnabled)
+                    .disabled(!engine.settings.workdayStartEnabled)
+                Text("Pop-up iskoči u zadano vrijeme, a ako je računalo tada spavalo — čim ga probudiš (npr. u 9:30). Uz nadoknadu nudi i start od zadanog vremena, pa te prvi prompt pita i za jutro.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Automatsko zaustavljanje") {
                 Toggle("Zaustavi tracking u zadano vrijeme", isOn: $engine.settings.autoStopEnabled)
                 DatePicker("Vrijeme", selection: autoStopTime, displayedComponents: .hourAndMinute)
@@ -114,22 +125,33 @@ struct SettingsView: View {
 
     // MARK: - Pomoćno
 
-    /// DatePicker radi s Date-om, a postavka je sat+minuta — most između to dvoje.
     private var autoStopTime: Binding<Date> {
+        timeBinding(hour: \.autoStopHour, minute: \.autoStopMinute)
+    }
+
+    private var workdayStartTime: Binding<Date> {
+        timeBinding(hour: \.workdayStartHour, minute: \.workdayStartMinute)
+    }
+
+    /// DatePicker radi s Date-om, a postavke su sat+minuta — most između to dvoje.
+    private func timeBinding(
+        hour: WritableKeyPath<AppSettings, Int>,
+        minute: WritableKeyPath<AppSettings, Int>
+    ) -> Binding<Date> {
         Binding(
             get: {
                 let cal = Calendar.current
                 return cal.date(
-                    bySettingHour: engine.settings.autoStopHour,
-                    minute: engine.settings.autoStopMinute,
+                    bySettingHour: engine.settings[keyPath: hour],
+                    minute: engine.settings[keyPath: minute],
                     second: 0,
                     of: Date()
                 ) ?? Date()
             },
             set: { newValue in
                 let comps = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                engine.settings.autoStopHour = comps.hour ?? 16
-                engine.settings.autoStopMinute = comps.minute ?? 0
+                engine.settings[keyPath: hour] = comps.hour ?? 0
+                engine.settings[keyPath: minute] = comps.minute ?? 0
             }
         )
     }

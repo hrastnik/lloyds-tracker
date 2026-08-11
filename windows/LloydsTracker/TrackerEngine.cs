@@ -43,6 +43,10 @@ public sealed class TrackerEngine : IDisposable
     private bool _autoStopWarningShown;
     /// <summary>How long before the automatic stop the warning pops up.</summary>
     private const double AutoStopLead = 60;
+    /// <summary>The day (dayKey) whose work-day-start reminder is done with — shown, or the
+    /// day got started meanwhile. Kept in memory: after an app restart the launch reminder
+    /// takes over the role anyway.</summary>
+    private string? _workdayReminderDayKey;
     /// <summary>Hidden control used to marshal background-thread callbacks (SessionSwitch)
     /// back onto the UI thread.</summary>
     private readonly Control _marshal = new();
@@ -82,28 +86,32 @@ public sealed class TrackerEngine : IDisposable
     public void ShowStartupReminderIfNeeded()
     {
         if (!Settings.ShowStartupReminder || IsTracking || _prompt.IsVisible) return;
-        _startupReminder.Show(Fmt.DayTitle(DateTime.Now), onStart: Start, onDismiss: () => { });
+        PresentStartReminder(DateTime.Now);
     }
 
     // MARK: - Controls
 
-    public void Start()
+    /// <summary><paramref name="backfillFrom"/> (from the work-day-start reminder) moves the
+    /// start of tracking back — the first prompt then asks about the whole morning, e.g.
+    /// 8:30–9:45.</summary>
+    public void Start(DateTime? backfillFrom = null)
     {
         var now = DateTime.Now;
         CurrentDayKey = Store.DayKey(now);
         Entries = Store.LoadDay(CurrentDayKey);
         _sessionStart = now;
+        _workdayReminderDayKey = CurrentDayKey;
 
         // Track from the start of the current interval (e.g. start at 9:56 with 15 min → from 9:45).
-        // If an entry already exists past the interval start, begin at the current 5-min block
-        // (never before the last entry's end) to avoid a duplicate record.
-        var intervalStart = GridFloor(now, Interval);
-        var coverFrom = intervalStart;
+        // If an entry already exists past that, begin at the last entry's end — when backfilling
+        // so the rest of the morning gets filled in, otherwise at the current 5-min block (to
+        // avoid a duplicate record).
+        var coverFrom = backfillFrom ?? GridFloor(now, Interval);
         if (Entries.Count > 0)
         {
             var latestEnd = Entries.Max(e => e.End);
-            if (latestEnd > intervalStart)
-                coverFrom = Max(GridFloor(now, 300), latestEnd);
+            if (latestEnd > coverFrom)
+                coverFrom = backfillFrom == null ? Max(GridFloor(now, 300), latestEnd) : latestEnd;
         }
         _lastCovered = Min(coverFrom, now);
         PauseUntil = null;
@@ -310,12 +318,61 @@ public sealed class TrackerEngine : IDisposable
             onDismiss: () => { });
     }
 
+    // MARK: - Start of the work day
+
+    /// <summary>Start of the work day on <paramref name="date"/> (null when the reminder is off).</summary>
+    private DateTime? WorkdayStart(DateTime date)
+    {
+        if (!Settings.WorkdayStartEnabled) return null;
+        int hour = Math.Clamp(Settings.WorkdayStartHour, 0, 23);
+        int minute = Math.Clamp(Settings.WorkdayStartMinute, 0, 59);
+        return new DateTime(date.Year, date.Month, date.Day, hour, minute, 0, date.Kind);
+    }
+
+    /// <summary>The time the reminder offers to backfill from ("Start od 8:30") — null when the
+    /// option is off, when the work day hasn't started yet, or when the gap is too small for the
+    /// backfill to differ from starting now.</summary>
+    private DateTime? BackfillStart(DateTime now)
+    {
+        if (!Settings.WorkdayStartBackfillEnabled) return null;
+        if (WorkdayStart(now) is not DateTime start) return null;
+        return (now - start).TotalSeconds >= 300 ? start : null;
+    }
+
+    /// <summary>The reminder at the set time: pops up when the work day begins, or — if the
+    /// computer was asleep then — as soon as it wakes and is unlocked (the timer keeps ticking
+    /// after a resume, so the next tick catches it). Fires once a day.</summary>
+    private void CheckWorkdayStart(DateTime now)
+    {
+        if (!Settings.WorkdayStartEnabled || IsTracking || _session.IsLocked) return;
+        if (_prompt.IsVisible || _startupReminder.IsVisible) return;
+        if (_workdayReminderDayKey == Store.DayKey(now)) return;
+        if (WorkdayStart(now) is not DateTime start || now < start) return;
+        // Unlike the launch reminder, this one easily pops up while you're away from the screen
+        // (e.g. the moment the laptop wakes), so it comes with a sound.
+        if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
+        PresentStartReminder(now);
+    }
+
+    /// <summary>Shared pop-up for both reminders (app launch and start of the work day).</summary>
+    private void PresentStartReminder(DateTime now)
+    {
+        // A reminder shown before the work day starts doesn't use up today's slot — it still pops
+        // up at the set time (e.g. launch at 7:00 with a work day starting at 8:30).
+        if (WorkdayStart(now) is DateTime start && now >= start)
+            _workdayReminderDayKey = Store.DayKey(now);
+        _startupReminder.Show(Fmt.DayTitle(now), BackfillStart(now),
+            onStart: backfillFrom => Start(backfillFrom),
+            onDismiss: () => { });
+    }
+
     // MARK: - Tick loop
 
     private void Tick()
     {
-        if (!IsTracking) return;
         var now = DateTime.Now;
+        CheckWorkdayStart(now);
+        if (!IsTracking) return;
 
         // Before anything else — the auto-stop applies while paused or awaiting a return too.
         if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt)
@@ -536,6 +593,18 @@ public sealed class TrackerEngine : IDisposable
             _autoStopWarning.Close();
             _autoStopWarningShown = false;
             AutoStopAt = IsTracking ? NextAutoStop(DateTime.Now) : null;
+        }
+
+        if (old.WorkdayStartEnabled != Settings.WorkdayStartEnabled
+            || old.WorkdayStartHour != Settings.WorkdayStartHour
+            || old.WorkdayStartMinute != Settings.WorkdayStartMinute)
+        {
+            // The new time applies from the next start of the work day: if today's has already
+            // passed, it stays quiet today — otherwise the pop-up would appear the moment an
+            // earlier hour gets dialled in the settings.
+            var now = DateTime.Now;
+            bool started = WorkdayStart(now) is DateTime start && now >= start;
+            _workdayReminderDayKey = started ? Store.DayKey(now) : null;
         }
     }
 

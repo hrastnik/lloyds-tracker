@@ -49,6 +49,15 @@ struct AppSettings: Codable, Equatable {
     var autoStopEnabled: Bool = true
     var autoStopHour: Int = 16
     var autoStopMinute: Int = 0
+    /// Podsjetnik na početak radnog dana — iskoči u zadano vrijeme, a ako je računalo
+    /// tad spavalo, čim se probudi. Laptop koji se ne gasi inače ostane bez podsjetnika,
+    /// jer se onaj kod pokretanja aplikacije javlja samo kod paljenja računala.
+    var workdayStartEnabled: Bool = true
+    var workdayStartHour: Int = 8
+    var workdayStartMinute: Int = 30
+    /// Podsjetnik nudi i start od početka radnog dana — otvaranje laptopa u 9:30 se
+    /// tako može upisati kao rad od 8:30 (jutro se nadoknadi).
+    var workdayStartBackfillEnabled: Bool = true
 
     init() {}
 
@@ -70,6 +79,10 @@ struct AppSettings: Codable, Equatable {
         autoStopEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoStopEnabled) ?? d.autoStopEnabled
         autoStopHour = try c.decodeIfPresent(Int.self, forKey: .autoStopHour) ?? d.autoStopHour
         autoStopMinute = try c.decodeIfPresent(Int.self, forKey: .autoStopMinute) ?? d.autoStopMinute
+        workdayStartEnabled = try c.decodeIfPresent(Bool.self, forKey: .workdayStartEnabled) ?? d.workdayStartEnabled
+        workdayStartHour = try c.decodeIfPresent(Int.self, forKey: .workdayStartHour) ?? d.workdayStartHour
+        workdayStartMinute = try c.decodeIfPresent(Int.self, forKey: .workdayStartMinute) ?? d.workdayStartMinute
+        workdayStartBackfillEnabled = try c.decodeIfPresent(Bool.self, forKey: .workdayStartBackfillEnabled) ?? d.workdayStartBackfillEnabled
     }
 }
 

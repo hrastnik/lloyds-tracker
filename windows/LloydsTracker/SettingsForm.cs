@@ -17,6 +17,9 @@ internal sealed class SettingsForm : Form
     private ComboBox _idleThreshold = null!;
     private ComboBox _autoStopHour = null!;
     private ComboBox _autoStopMinute = null!;
+    private ComboBox _workdayStartHour = null!;
+    private ComboBox _workdayStartMinute = null!;
+    private CheckBox _workdayBackfill = null!;
     private Label _launchStatus = null!;
 
     private readonly List<FlatButton> _pills = new();
@@ -43,9 +46,12 @@ internal sealed class SettingsForm : Form
 
         int contentHeight = 0;
         AddPage(tabBar, tabsHeight, "Promptanje", () => { BuildPromptSection(); BuildHistorySection(); }, ref contentHeight);
-        AddPage(tabBar, tabsHeight, "Radni dan", () => { BuildAutoStopSection(); BuildIdleSection(); }, ref contentHeight);
+        AddPage(tabBar, tabsHeight, "Radni dan", () => { BuildWorkdayStartSection(); BuildAutoStopSection(); BuildIdleSection(); }, ref contentHeight);
         AddPage(tabBar, tabsHeight, "Sustav", () => { BuildSystemSection(); BuildDataSection(); }, ref contentHeight);
 
+        // Prozor ne smije prerasti ekran (svaki px je DPI-skaliran) — višak stranica scrolla.
+        if (Screen.PrimaryScreen is Screen screen)
+            contentHeight = Math.Max(Brand.S(200), Math.Min(contentHeight, screen.WorkingArea.Height - tabsHeight - Brand.S(60)));
         ClientSize = new Size(ClientSize.Width, tabsHeight + contentHeight);
         foreach (var page in _pages) page.Size = new Size(ClientSize.Width, contentHeight);
         SelectTab(0);
@@ -116,6 +122,33 @@ internal sealed class SettingsForm : Form
 
         Toggle("Zvuk kod prompta", _engine.Settings.SoundEnabled,
             v => _engine.MutateSettings(s => s.SoundEnabled = v));
+        Gap(8);
+    }
+
+    private void BuildWorkdayStartSection()
+    {
+        SectionHeader("POČETAK RADNOG DANA");
+        Toggle("Podsjetnik u zadano vrijeme", _engine.Settings.WorkdayStartEnabled, v =>
+        {
+            _engine.MutateSettings(s => s.WorkdayStartEnabled = v);
+            _workdayStartHour.Enabled = v;
+            _workdayStartMinute.Enabled = v;
+            _workdayBackfill.Enabled = v;
+        });
+
+        (_workdayStartHour, _workdayStartMinute) = LabeledTimeCombos(
+            "Vrijeme",
+            _engine.Settings.WorkdayStartHour,
+            _engine.Settings.WorkdayStartMinute,
+            (h, m) => _engine.MutateSettings(s => { s.WorkdayStartHour = h; s.WorkdayStartMinute = m; }));
+        _workdayStartHour.Enabled = _engine.Settings.WorkdayStartEnabled;
+        _workdayStartMinute.Enabled = _engine.Settings.WorkdayStartEnabled;
+
+        _workdayBackfill = Toggle("Ponudi i nadoknadu od tog vremena", _engine.Settings.WorkdayStartBackfillEnabled,
+            v => _engine.MutateSettings(s => s.WorkdayStartBackfillEnabled = v));
+        _workdayBackfill.Enabled = _engine.Settings.WorkdayStartEnabled;
+
+        Caption("Pop-up iskoči u zadano vrijeme, a ako je računalo tada spavalo — čim ga probudiš (npr. u 9:30). Uz nadoknadu nudi i start od zadanog vremena, pa te prvi prompt pita i za jutro.");
         Gap(8);
     }
 
@@ -305,7 +338,7 @@ internal sealed class SettingsForm : Form
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
     }
 
-    private void Toggle(string text, bool value, Action<bool> onChange)
+    private CheckBox Toggle(string text, bool value, Action<bool> onChange)
     {
         var box = new CheckBox
         {
@@ -322,6 +355,7 @@ internal sealed class SettingsForm : Form
         box.CheckedChanged += (_, _) => onChange(box.Checked);
         _stack.Controls.Add(box);
         _y += box.Height + Brand.S(8);
+        return box;
     }
 
     private void Caption(string text)

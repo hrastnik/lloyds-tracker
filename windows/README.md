@@ -59,6 +59,22 @@ spojeno (`2×`). Spajaju se samo neposredni susjedi (jedan završava kad drugi p
 pauza ili drugi opis između prekida niz. Brisanje spojenog reda briše sve njegove blokove.
 Postavka se pamti.
 
+### Početak radnog dana
+
+Podsjetnik da se pokrene tracking javlja se na dva načina:
+
+- **Kod pokretanja aplikacije** — pop-up čim se app digne (npr. nakon paljenja računala).
+- **U zadano vrijeme početka radnog dana** (default **8:30**) — isti pop-up iskoči u to
+  vrijeme, a ako je računalo tada spavalo, čim ga probudiš i otključaš. Laptop koji se ne
+  gasi tako više ne ostane bez podsjetnika. Javlja se jednom dnevno; *Kasnije* ga zatvara
+  do sutra, a pokretanje dana iz popovera ga također preskače.
+
+Uz uključenu **nadoknadu** (default) pop-up nudi izbor kad je radni dan već počeo: *Start od
+8:30* ili *Počni tek od sada*. Nadoknada samo pomiče početak trackanja unatrag — prvi prompt
+onda pita za cijelo jutro (8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
+Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, kreće se od kraja
+zadnjeg unosa.
+
 ### Odsutnost
 
 Dvije neovisne opcije, **obje po defaultu isključene**:
@@ -100,6 +116,8 @@ Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Interval promptanja | 15 min (5–60) |
 | Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
 | Zvuk kod prompta | uključen |
+| Podsjetnik na početak radnog dana + vrijeme | uključeno, 8:30 (minute u koraku od 5) |
+| Ponudi i nadoknadu od tog vremena | uključeno |
 | Automatsko zaustavljanje + vrijeme | uključeno, 16:00 (minute u koraku od 5) |
 | Detekcija neaktivnosti (tipkovnica/miš) + prag | isključena, 5 min |
 | Bilježi pauzu kad je ekran zaključan | isključeno |
@@ -138,7 +156,7 @@ windows/LloydsTracker/
 ├── BlockBarControl.cs        # traka za razbijanje perioda + PromptGeometry
 ├── SummaryForm.cs            # pregled dana, copy/CSV export, brisanje
 ├── SettingsForm.cs           # postavke
-├── StartupReminder.cs        # pop-up podsjetnik na pokretanju
+├── StartupReminder.cs        # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.cs        # upozorenje 1 min prije auto-stopa + produženja
 ├── IdleMonitor.cs            # GetLastInputInfo
 ├── SessionMonitor.cs         # SessionSwitch (lock/unlock)

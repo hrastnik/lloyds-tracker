@@ -8,6 +8,10 @@ exportati u CSV (kronološki pregled može spojiti susjedne unose istog naziva u
 zaboraviš isključiti, tracking se **sam zaustavlja** u zadano vrijeme (default 16:00) —
 minutu prije iskoči upozorenje s opcijom produženja samo za taj dan.
 
+Ujutro te sam podsjeti: u zadano vrijeme početka radnog dana (default **8:30**) iskoči
+pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvoriš tek u 9:30,
+nudi i **start od 8:30**, pa se jutro nadoknadi.
+
 Dvije nativne verzije, isti JSON format podataka:
 
 | Verzija | Tehnologija | Folder |

@@ -4,19 +4,23 @@ using System.Windows.Forms;
 
 namespace LloydsTracker;
 
-/// <summary>Pop-up shown at launch to remind you to start the work day (mirrors the
-/// macOS StartupReminderController/View). Same floating panel as the prompt.</summary>
+/// <summary>Pop-up shown at launch and at the set start of the work day, to remind you to
+/// start the day (mirrors the macOS StartupReminderController/View). Same floating panel as
+/// the prompt.</summary>
 internal sealed class StartupReminderController
 {
     private StartupReminderForm? _form;
 
     public bool IsVisible => _form is { IsDisposed: false };
 
-    public void Show(string dayTitle, Action onStart, Action onDismiss)
+    /// <summary><paramref name="backfillFrom"/> (a start of the work day that has already passed)
+    /// adds the choice between starting from that time or only from now. <paramref name="onStart"/>
+    /// gets the chosen start (null = from now).</summary>
+    public void Show(string dayTitle, DateTime? backfillFrom, Action<DateTime?> onStart, Action onDismiss)
     {
         if (IsVisible) return;
-        var form = new StartupReminderForm(dayTitle,
-            onStart: () => { Close(); onStart(); },
+        var form = new StartupReminderForm(dayTitle, backfillFrom,
+            onStart: from => { Close(); onStart(from); },
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
         form.FormClosed += (_, _) => { if (_form == form) _form = null; };
@@ -33,13 +37,16 @@ internal sealed class StartupReminderController
 
 internal sealed class StartupReminderForm : Form
 {
-    private readonly Action _onStart;
+    private readonly Action<DateTime?> _onStart;
     private readonly Action _onDismiss;
+    /// <summary>Set → the morning backfill (start from the beginning of the work day) is offered too.</summary>
+    private readonly DateTime? _backfillFrom;
 
-    public StartupReminderForm(string dayTitle, Action onStart, Action onDismiss)
+    public StartupReminderForm(string dayTitle, DateTime? backfillFrom, Action<DateTime?> onStart, Action onDismiss)
     {
         _onStart = onStart;
         _onDismiss = onDismiss;
+        _backfillFrom = backfillFrom;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -75,19 +82,35 @@ internal sealed class StartupReminderForm : Form
         Controls.Add(title);
         y += title.Height + Brand.S(6);
 
-        var subtitle = new Label { AutoSize = false, Text = "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.", Font = Brand.Ui(9f), ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(pad, y), Width = innerW };
+        string subtitleText = _backfillFrom is DateTime startFrom
+            ? $"Radni dan počinje u {Fmt.Hhmm(startFrom)}, a tracking još nije pokrenut. Mogu ga voditi od tada (pa te prvi prompt pita i za jutro) ili tek od sada."
+            : "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.";
+        var subtitle = new Label { AutoSize = false, Text = subtitleText, Font = Brand.Ui(9f), ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(pad, y), Width = innerW };
         subtitle.Height = TextRenderer.MeasureText(subtitle.Text, subtitle.Font, new Size(innerW, int.MaxValue), TextFormatFlags.WordBreak).Height + Brand.S(2);
         Controls.Add(subtitle);
         y += subtitle.Height + Brand.S(16);
 
-        var start = new FlatButton { Text = "Start — počni radni dan", Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
-        start.Click += (_, _) => _onStart();
+        // With a backfill the primary button starts from the beginning of the work day — that's
+        // the reason the pop-up appeared at the set time in the first place.
+        string startText = _backfillFrom is DateTime backfill ? $"Start od {Fmt.Hhmm(backfill)}" : "Start — počni radni dan";
+        var start = new FlatButton { Text = startText, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
+        start.Click += (_, _) => _onStart(_backfillFrom);
         Controls.Add(start);
 
         var later = new FlatButton { Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
         later.Click += (_, _) => _onDismiss();
         Controls.Add(later);
-        y += Brand.S(40) + pad;
+        y += Brand.S(40);
+
+        if (_backfillFrom != null)
+        {
+            y += Brand.S(10);
+            var startNow = new FlatButton { Text = "Počni tek od sada", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(innerW, Brand.S(36)), Location = new Point(pad, y) };
+            startNow.Click += (_, _) => _onStart(null);
+            Controls.Add(startNow);
+            y += Brand.S(36);
+        }
+        y += pad;
 
         ClientSize = new Size(ClientSize.Width, y);
 
