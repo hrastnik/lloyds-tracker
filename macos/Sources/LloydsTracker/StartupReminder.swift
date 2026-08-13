@@ -6,15 +6,21 @@ import SwiftUI
 @MainActor
 final class StartupReminderController {
     private var window: NSWindow?
+    /// Kad je podsjetnik prikazan i s kojom ponudom nadoknade — po tome se vidi je li
+    /// otvoreni prozor u međuvremenu zastario (prenoćio, ili je radni dan tek počeo).
+    private(set) var shownAt: Date?
+    private(set) var shownBackfillFrom: Date?
 
     var isVisible: Bool { window != nil }
 
     /// `backfillFrom` (početak radnog dana koji je već prošao) dodaje izbor: start od tog
-    /// vremena ili tek od sada. `onStart` dobije odabrani početak (nil = od sada).
+    /// vremena ili tek od sada. `onStart` dobije samo je li odabrana nadoknada — točno
+    /// vrijeme računa engine u trenutku klika, jer prozor čeka odgovor i može prenoćiti,
+    /// pa bi zapamćeni datum tada pomaknuo početak na jučer.
     func show(
         dayTitle: String,
         backfillFrom: Date?,
-        onStart: @escaping (Date?) -> Void,
+        onStart: @escaping (Bool) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         guard window == nil else { return }
@@ -22,9 +28,9 @@ final class StartupReminderController {
         let view = StartupReminderView(
             dayTitle: dayTitle,
             backfillFrom: backfillFrom,
-            onStart: { [weak self] from in
+            onStart: { [weak self] useBackfill in
                 self?.close()
-                onStart(from)
+                onStart(useBackfill)
             },
             onDismiss: { [weak self] in
                 self?.close()
@@ -54,11 +60,15 @@ final class StartupReminderController {
         panel.isReleasedWhenClosed = false
         panel.makeKeyAndOrderFront(nil)
         window = panel
+        shownAt = Date()
+        shownBackfillFrom = backfillFrom
     }
 
     func close() {
         window?.orderOut(nil)
         window = nil
+        shownAt = nil
+        shownBackfillFrom = nil
     }
 }
 
@@ -66,7 +76,8 @@ struct StartupReminderView: View {
     let dayTitle: String
     /// Postavljeno → nudi se i nadoknada jutra (start od početka radnog dana).
     let backfillFrom: Date?
-    let onStart: (Date?) -> Void
+    /// Parametar je "s nadoknadom" (true) ili "tek od sada" (false).
+    let onStart: (Bool) -> Void
     let onDismiss: () -> Void
 
     var body: some View {
@@ -101,7 +112,7 @@ struct StartupReminderView: View {
                 HStack(spacing: 10) {
                     // Uz nadoknadu je primarni gumb start od početka radnog dana — to je
                     // razlog zašto je pop-up uopće iskočio u zadano vrijeme.
-                    Button { onStart(backfillFrom) } label: {
+                    Button { onStart(backfillFrom != nil) } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 11, weight: .bold))
@@ -130,7 +141,7 @@ struct StartupReminderView: View {
                 }
 
                 if backfillFrom != nil {
-                    Button { onStart(nil) } label: {
+                    Button { onStart(false) } label: {
                         Text("Počni tek od sada")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Color.lloydsGray)

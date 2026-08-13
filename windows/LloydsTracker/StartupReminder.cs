@@ -13,36 +13,54 @@ internal sealed class StartupReminderController
 
     public bool IsVisible => _form is { IsDisposed: false };
 
+    /// <summary>When the reminder was shown and with which backfill offer — that's how an open
+    /// window is recognised as stale (it stayed up overnight, or the work day has only just
+    /// started).</summary>
+    public DateTime? ShownAt { get; private set; }
+    public DateTime? ShownBackfillFrom { get; private set; }
+
     /// <summary><paramref name="backfillFrom"/> (a start of the work day that has already passed)
     /// adds the choice between starting from that time or only from now. <paramref name="onStart"/>
-    /// gets the chosen start (null = from now).</summary>
-    public void Show(string dayTitle, DateTime? backfillFrom, Action<DateTime?> onStart, Action onDismiss)
+    /// gets only whether the backfill was chosen — the exact time is computed by the engine at
+    /// click time, because the window waits for an answer and may stay up overnight, when a
+    /// remembered date would move the start back to yesterday.</summary>
+    public void Show(string dayTitle, DateTime? backfillFrom, Action<bool> onStart, Action onDismiss)
     {
         if (IsVisible) return;
         var form = new StartupReminderForm(dayTitle, backfillFrom,
-            onStart: from => { Close(); onStart(from); },
+            onStart: useBackfill => { Close(); onStart(useBackfill); },
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
-        form.FormClosed += (_, _) => { if (_form == form) _form = null; };
+        form.FormClosed += (_, _) => { if (_form == form) Forget(); };
         form.Show();
         form.Activate();
+        ShownAt = DateTime.Now;
+        ShownBackfillFrom = backfillFrom;
     }
 
     public void Close()
     {
-        if (_form is { IsDisposed: false } f) { _form = null; f.Close(); f.Dispose(); }
-        else _form = null;
+        if (_form is { IsDisposed: false } f) { Forget(); f.Close(); f.Dispose(); }
+        else Forget();
+    }
+
+    private void Forget()
+    {
+        _form = null;
+        ShownAt = null;
+        ShownBackfillFrom = null;
     }
 }
 
 internal sealed class StartupReminderForm : Form
 {
-    private readonly Action<DateTime?> _onStart;
+    /// <summary>The parameter is "with backfill" (true) or "only from now" (false).</summary>
+    private readonly Action<bool> _onStart;
     private readonly Action _onDismiss;
     /// <summary>Set → the morning backfill (start from the beginning of the work day) is offered too.</summary>
     private readonly DateTime? _backfillFrom;
 
-    public StartupReminderForm(string dayTitle, DateTime? backfillFrom, Action<DateTime?> onStart, Action onDismiss)
+    public StartupReminderForm(string dayTitle, DateTime? backfillFrom, Action<bool> onStart, Action onDismiss)
     {
         _onStart = onStart;
         _onDismiss = onDismiss;
@@ -94,7 +112,7 @@ internal sealed class StartupReminderForm : Form
         // the reason the pop-up appeared at the set time in the first place.
         string startText = _backfillFrom is DateTime backfill ? $"Start od {Fmt.Hhmm(backfill)}" : "Start — počni radni dan";
         var start = new FlatButton { Text = startText, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
-        start.Click += (_, _) => _onStart(_backfillFrom);
+        start.Click += (_, _) => _onStart(_backfillFrom != null);
         Controls.Add(start);
 
         var later = new FlatButton { Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
@@ -106,7 +124,7 @@ internal sealed class StartupReminderForm : Form
         {
             y += Brand.S(10);
             var startNow = new FlatButton { Text = "Počni tek od sada", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(innerW, Brand.S(36)), Location = new Point(pad, y) };
-            startNow.Click += (_, _) => _onStart(null);
+            startNow.Click += (_, _) => _onStart(false);
             Controls.Add(startNow);
             y += Brand.S(36);
         }

@@ -101,17 +101,23 @@ public sealed class TrackerEngine : IDisposable
         Entries = Store.LoadDay(CurrentDayKey);
         _sessionStart = now;
         _workdayReminderDayKey = CurrentDayKey;
+        _startupReminder.Close();
+
+        // The backfill only counts inside today — a safety rail so the start can never land in
+        // yesterday (the first prompt would then ask about a 25 h period).
+        var backfill = backfillFrom;
+        if (backfill != null && Store.DayKey(backfill.Value) != CurrentDayKey) backfill = null;
 
         // Track from the start of the current interval (e.g. start at 9:56 with 15 min → from 9:45).
         // If an entry already exists past that, begin at the last entry's end — when backfilling
         // so the rest of the morning gets filled in, otherwise at the current 5-min block (to
         // avoid a duplicate record).
-        var coverFrom = backfillFrom ?? GridFloor(now, Interval);
+        var coverFrom = backfill ?? GridFloor(now, Interval);
         if (Entries.Count > 0)
         {
             var latestEnd = Entries.Max(e => e.End);
             if (latestEnd > coverFrom)
-                coverFrom = backfillFrom == null ? Max(GridFloor(now, 300), latestEnd) : latestEnd;
+                coverFrom = backfill == null ? Max(GridFloor(now, 300), latestEnd) : latestEnd;
         }
         _lastCovered = Min(coverFrom, now);
         PauseUntil = null;
@@ -345,12 +351,29 @@ public sealed class TrackerEngine : IDisposable
     private void CheckWorkdayStart(DateTime now)
     {
         if (!Settings.WorkdayStartEnabled || IsTracking || _session.IsLocked) return;
-        if (_prompt.IsVisible || _startupReminder.IsVisible) return;
-        if (_workdayReminderDayKey == Store.DayKey(now)) return;
+        if (_prompt.IsVisible) return;
         if (WorkdayStart(now) is not DateTime start || now < start) return;
+
+        // An open reminder waits for an answer as long as it takes, so it may be from yesterday
+        // (it stayed up overnight) or from before the work day started, when the backfill wasn't
+        // on offer yet. It carries a stale title and offer, and it also blocks today's reminder —
+        // replace it with a fresh one; if it isn't stale, leave it alone.
+        bool playSound = Settings.SoundEnabled;
+        if (_startupReminder.IsVisible)
+        {
+            var shownAt = _startupReminder.ShownAt ?? DateTime.MinValue;
+            bool fromPreviousDay = Store.DayKey(shownAt) != Store.DayKey(now);
+            bool backfillAppeared = _startupReminder.ShownBackfillFrom == null && BackfillStart(now) != null;
+            if (!fromPreviousDay && !backfillAppeared) return;
+            // A window from today is already on screen and its sound has played — only its offer
+            // changes, so it goes without a sound.
+            if (!fromPreviousDay) playSound = false;
+            _startupReminder.Close();
+        }
+        else if (_workdayReminderDayKey == Store.DayKey(now)) return;
         // Unlike the launch reminder, this one easily pops up while you're away from the screen
         // (e.g. the moment the laptop wakes), so it comes with a sound.
-        if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
+        if (playSound) SystemSounds.Asterisk.Play();
         PresentStartReminder(now);
     }
 
@@ -362,7 +385,9 @@ public sealed class TrackerEngine : IDisposable
         if (WorkdayStart(now) is DateTime start && now >= start)
             _workdayReminderDayKey = Store.DayKey(now);
         _startupReminder.Show(Fmt.DayTitle(now), BackfillStart(now),
-            onStart: backfillFrom => Start(backfillFrom),
+            // The backfill time is computed at click time, not at display time — otherwise a
+            // reminder that stayed up overnight would start the day from yesterday's start.
+            onStart: useBackfill => Start(useBackfill ? BackfillStart(DateTime.Now) : null),
             onDismiss: () => { });
     }
 

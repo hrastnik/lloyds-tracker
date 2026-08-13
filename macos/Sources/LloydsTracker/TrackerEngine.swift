@@ -95,14 +95,19 @@ final class TrackerEngine: ObservableObject {
         entries = Store.loadDay(currentDayKey)
         sessionStart = now
         workdayReminderDayKey = currentDayKey
+        startupReminder.close()
+
+        // Nadoknada vrijedi samo unutar današnjeg dana — sigurnosna ograda da početak nikad
+        // ne padne u jučer (prvi prompt bi onda pitao za period od 25 h).
+        let backfill = backfillFrom.flatMap { Store.dayKey($0) == currentDayKey ? $0 : nil }
 
         // Trackaj od početka trenutnog intervala (npr. start u 9:56 uz 15 min → od 9:45).
         // Ako nakon toga već postoji neki unos, kreni od kraja zadnjeg unosa — kod
         // nadoknade da se popuni ostatak jutra, inače od početka trenutnog 5-min bloka
         // (da ne nastane dupli zapis).
-        var coverFrom = backfillFrom ?? Self.gridFloor(now, step: interval)
+        var coverFrom = backfill ?? Self.gridFloor(now, step: interval)
         if let latestEnd = entries.map(\.end).max(), latestEnd > coverFrom {
-            coverFrom = backfillFrom == nil ? max(Self.gridFloor(now, step: 300), latestEnd) : latestEnd
+            coverFrom = backfill == nil ? max(Self.gridFloor(now, step: 300), latestEnd) : latestEnd
         }
         lastCovered = min(coverFrom, now)
         pauseUntil = nil
@@ -325,11 +330,27 @@ final class TrackerEngine: ObservableObject {
     /// spavalo — čim se probudi i otključa (timer se nakon buđenja nastavi vrtjeti, pa ga
     /// uhvati prvi idući tick). Javlja se jednom dnevno.
     private func checkWorkdayStart(now: Date) {
-        guard settings.workdayStartEnabled, !isTracking, !isLocked,
-              !prompt.isVisible, !startupReminder.isVisible,
-              workdayReminderDayKey != Store.dayKey(now),
+        guard settings.workdayStartEnabled, !isTracking, !isLocked, !prompt.isVisible,
               let start = workdayStart(on: now), now >= start else { return }
-        if settings.soundEnabled {
+
+        // Otvoreni podsjetnik čeka odgovor koliko treba, pa može biti od jučer (prenoćio)
+        // ili od prije početka radnog dana, kad nadoknada još nije bila u ponudi. Nosi
+        // zastarjeli naslov i ponudu, a blokira i današnji podsjetnik — zamijenimo ga
+        // svježim; ako nije zastario, pustimo ga na miru.
+        var playSound = settings.soundEnabled
+        if startupReminder.isVisible {
+            let shownAt = startupReminder.shownAt ?? .distantPast
+            let fromPreviousDay = Store.dayKey(shownAt) != Store.dayKey(now)
+            let backfillAppeared = startupReminder.shownBackfillFrom == nil && backfillStart(now: now) != nil
+            guard fromPreviousDay || backfillAppeared else { return }
+            // Prozor od danas je već na ekranu i zvuk je uz njega odsvirao — mijenja mu se
+            // samo ponuda, pa ide bez zvuka.
+            if !fromPreviousDay { playSound = false }
+            startupReminder.close()
+        } else if workdayReminderDayKey == Store.dayKey(now) {
+            return
+        }
+        if playSound {
             // Za razliku od podsjetnika na pokretanju, ovaj lako iskoči dok nisi za
             // ekranom (npr. čim se laptop probudi), pa ga prati i zvuk.
             NSSound(named: "Glass")?.play()
@@ -347,7 +368,12 @@ final class TrackerEngine: ObservableObject {
         startupReminder.show(
             dayTitle: Fmt.dayTitle.string(from: now),
             backfillFrom: backfillStart(now: now),
-            onStart: { [weak self] backfillFrom in self?.start(from: backfillFrom) },
+            // Vrijeme nadoknade se računa u trenutku klika, a ne prikaza — inače bi
+            // podsjetnik koji je prenoćio startao dan od jučerašnjeg početka.
+            onStart: { [weak self] useBackfill in
+                guard let self else { return }
+                self.start(from: useBackfill ? self.backfillStart(now: Date()) : nil)
+            },
             onDismiss: {}
         )
     }

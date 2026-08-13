@@ -73,7 +73,9 @@ Uz uključenu **nadoknadu** (default) pop-up nudi izbor kad je radni dan već po
 8:30* ili *Počni tek od sada*. Nadoknada samo pomiče početak trackanja unatrag — prvi prompt
 onda pita za cijelo jutro (8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
 Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, kreće se od kraja
-zadnjeg unosa.
+zadnjeg unosa. Nadoknada se uvijek odnosi na **današnji** dan: pop-up čeka odgovor koliko
+treba, pa se onaj koji ostane otvoren (preko noći ili od prije 8:30) u zadano vrijeme
+osvježi — *Start od 8:30* nikad ne vuče početak na jučer.
 
 ### Odsutnost
 
