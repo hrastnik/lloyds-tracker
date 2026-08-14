@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lloyds Tracker
+Comment=Time tracker u traci
+Exec=lloyds-tracker
+Icon=lloyds-tracker
+Terminal=false
+Categories=Utility;Office;
+Keywords=time;tracker;lloyds;
+StartupNotify=false

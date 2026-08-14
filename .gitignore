@@ -11,3 +11,7 @@ windows/**/bin/
 windows/**/obj/
 windows/dist/
 *.user
+
+# Linux app (Rust / GTK4)
+linux/target/
+linux/dist/

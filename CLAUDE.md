@@ -3,29 +3,41 @@
 Time tracker u traci (menu bar / system tray), Lloyds Digital stil: crna `#070707`,
 žuta `#FBDE07`, tekst UI-a i komunikacija na hrvatskom.
 
-**Dva nativna porta istog proizvoda** — `macos/` (Swift 6 / SwiftUI + AppKit) i
-`windows/` (C# / .NET 8 + WinForms). Windows je namjerno *direktan port*: iste klase, ista
-imena, isti komentari po sekcijama (`// MARK: -`), isti tekstovi u UI-u.
+**Tri nativna porta istog proizvoda** — `macos/` (Swift 6 / SwiftUI + AppKit),
+`windows/` (C# / .NET 8 + WinForms) i `linux/` (Rust / GTK4 + `ksni`). Windows i Linux su
+namjerno *direktni portovi*: iste klase/moduli, ista imena, isti komentari po sekcijama
+(`// MARK: -`), isti tekstovi u UI-u.
 
 ## Pravila kod izmjena
 
-- **Svaka funkcionalna promjena ide na oba porta**, u istoj promjeni. Mapiranje
-  macOS → Windows je u [windows/README.md](windows/README.md).
+- **Svaka funkcionalna promjena ide na sva tri porta**, u istoj promjeni. Mapiranja su u
+  [windows/README.md](windows/README.md) i [linux/README.md](linux/README.md) (uz popis
+  onoga što je na Linuxu namjerno drukčije — pozicioniranje prozora, meni u traci).
 - **`settings.json` / dnevne JSON datoteke dijele shemu** (ISO 8601 UTC). Novi ključ mora
-  imati isto ime i isti default na oba porta. macOS `AppSettings.init(from:)` koristi
-  `decodeIfPresent` (stari file ne smije pasti); Windows svojstva drži **abecedno** jer
-  macOS encoder piše `sortedKeys`.
-- README-e (root + oba porta) drži u skladu s postavkama i ponašanjem.
+  imati isto ime i isti default na sva tri porta. macOS `AppSettings.init(from:)` koristi
+  `decodeIfPresent` (stari file ne smije pasti); Windows svojstva i Linux `AppSettings`
+  polja drže **abecedno** jer macOS encoder piše `sortedKeys` (Linux dodatno traži
+  `#[serde(rename_all = "camelCase")]` i `#[serde(default = "…")]` po polju).
+- Linux `TrackerEngine` ne zove prozore izravno nego vraća `Effect`-e koje `main.rs`
+  primijeni nakon što otpusti `RefCell` posudbu — inače callback iz prozora natrag u engine
+  ruši program.
+- README-e (root + sva tri porta) drži u skladu s postavkama i ponašanjem.
 
 ## Build / release
 
 ```sh
 cd macos && ./build.sh && cp -r dist/LloydsTracker.app /Applications/   # macOS
+
+# Linux se kompajlira i na Macu (GTK4 preko brewa) — provjeri prije pusha:
+cd linux && PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/share/pkgconfig" \
+  cargo clippy -- -D warnings
 ```
 
 Windows se **ne može buildati na Macu** (`net8.0-windows`) i `dotnet` nije instaliran —
-push na `main` je jedina provjera da se C# kompajlira (`gh run list`). Release s `.exe`-om
-ide preko taga `vX.Y.Z`; cijeli postupak i bump verzija su u [README.md](README.md#nova-verzija--windows-build).
+push na `main` je jedina provjera da se C# kompajlira (`gh run list`). Linux tarball isto
+nastaje tek na CI-u (`linux.yml`), ali se kod lokalno da provjeriti gore navedenim
+clippyjem. Release s `.exe`-om i `.tar.gz`-om ide preko taga `vX.Y.Z`; cijeli postupak i
+bump verzija su u [README.md](README.md#nova-verzija--windows-i-linux-build).
 
 ## Kod pokretanja aplikacije
 

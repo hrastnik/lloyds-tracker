@@ -2,7 +2,7 @@ name: Release
 
 # Cut a release by pushing a version tag, e.g.:
 #   git tag v1.0.0 && git push origin v1.0.0
-# This builds the Windows .exe and attaches it to a GitHub Release.
+# This builds the Windows .exe and the Linux tarball and attaches both to a GitHub Release.
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
 
     steps:
@@ -30,12 +30,56 @@ jobs:
           $ver = "${{ github.ref_name }}" -replace '^v',''
           dotnet publish windows/LloydsTracker/LloydsTracker.csproj -c Release -o windows/dist -p:Version=$ver
 
-      - name: Create GitHub Release with the .exe
-        shell: pwsh
+      - name: Upload .exe for the release job
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-exe
+          path: windows/dist/LloydsTracker.exe
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install GTK4 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev
+
+      - name: Build tarball (version from tag)
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          sed -i "0,/^version = .*/s//version = \"$ver\"/" linux/Cargo.toml
+          linux/build.sh
+
+      - name: Upload tarball for the release job
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-tarball
+          path: linux/dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release with both builds
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            "windows/dist/LloydsTracker.exe" `
-            --title "Lloyds Tracker ${{ github.ref_name }}" `
+          gh release create "${{ github.ref_name }}" \
+            artifacts/LloydsTracker.exe \
+            artifacts/*.tar.gz \
+            --repo "${{ github.repository }}" \
+            --title "Lloyds Tracker ${{ github.ref_name }}" \
             --generate-notes

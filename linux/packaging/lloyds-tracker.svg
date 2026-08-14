@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="256" height="256">
+  <!-- Ista geometrija kao ikona u traci (icon.rs / TrayIconFactory.cs): žuta pločica
+       s crnim satom na 32-grid mreži. -->
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#FBDE07"/>
+  <circle cx="16" cy="16" r="12" fill="#070707" fill-opacity="0.22"
+          stroke="#070707" stroke-width="2.6"/>
+  <g stroke="#070707" stroke-width="2.4" stroke-linecap="round">
+    <line x1="16" y1="16" x2="16" y2="8"/>
+    <line x1="16" y1="16" x2="22" y2="18"/>
+  </g>
+</svg>

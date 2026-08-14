@@ -1,0 +1,49 @@
+name: Linux build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "linux/**"
+      - ".github/workflows/linux.yml"
+  pull_request:
+    paths:
+      - "linux/**"
+      - ".github/workflows/linux.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install GTK4 development files
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('linux/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --manifest-path linux/Cargo.toml --release -- -D warnings
+
+      - name: Build tarball
+        run: linux/build.sh
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: lloyds-tracker-linux-x86_64
+          path: linux/dist/*.tar.gz
+          if-no-files-found: error
