@@ -11,6 +11,43 @@ final class KeyableWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+/// Blago pojavljivanje pop-upa: fade + kratki pomak umjesto "upada" iz ničega.
+///
+/// Uz to, prozor **ne uzima tipkovnicu odmah**. Pop-up koji istog trenutka postane key
+/// pokrade tipkanje u pola riječi — npr. iskoči dok pišeš u drugoj aplikaciji i ostatak
+/// rečenice završi u polju prompta (pa i pregazi pre-fill). Zato se key status preuzima
+/// tek nakon `keyDelay`, a i fokus na polje u view sloju čeka isto toliko.
+enum PanelFade {
+    static let duration: TimeInterval = 0.28
+    /// Koliko pop-up čeka prije nego preuzme tipkovnicu.
+    static let keyDelay: TimeInterval = 0.9
+
+    /// Prozor mora već biti na svojoj konačnoj poziciji — animira se prema njoj.
+    /// `slide` je početni odmak po Y (pozitivno = spušta se odozgo).
+    /// `keyDelay: nil` znači "uzmi tipkovnicu odmah".
+    @MainActor
+    static func appear(_ window: NSWindow, slide: CGFloat = 10, keyDelay: TimeInterval? = keyDelay) {
+        let target = window.frame
+        window.alphaValue = 0
+        window.setFrame(target.offsetBy(dx: 0, dy: slide), display: false)
+        window.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            window.animator().alphaValue = 1
+            window.animator().setFrame(target, display: true)
+        }
+        guard let keyDelay else {
+            window.makeKey()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + keyDelay) { [weak window] in
+            guard let window, window.isVisible else { return }
+            window.makeKey()
+        }
+    }
+}
+
 /// Promjenjivo stanje perioda dok je prompt vidljiv. Kad neodgovoren prompt "preživi"
 /// granicu intervala, produžimo `end` (skupno vrijeme) umjesto da otvaramo novi prompt.
 @MainActor
@@ -105,7 +142,7 @@ final class PromptController {
         request: PromptRequest,
         style: PromptStyle,
         history: [String],
-        onSubmit: @escaping ([PromptSegment]) -> Void,
+        onSubmit: @escaping (PromptResult) -> Void,
         onSnooze: @escaping () -> Void
     ) {
         guard window == nil else { return }
@@ -119,9 +156,9 @@ final class PromptController {
             model: model,
             style: style,
             history: history,
-            onSubmit: { [weak self] segments in
+            onSubmit: { [weak self] result in
                 self?.close()
-                onSubmit(segments)
+                onSubmit(result)
             },
             onSnooze: { [weak self] in
                 self?.close()
@@ -153,7 +190,7 @@ final class PromptController {
             let f = Self.promptScreen().visibleFrame
             panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
             panel.isReleasedWhenClosed = false
-            panel.makeKeyAndOrderFront(nil)
+            PanelFade.appear(panel)
             window = panel
 
         case .fullscreen:
@@ -172,12 +209,13 @@ final class PromptController {
             win.contentView = hosting
             win.isReleasedWhenClosed = false
             NSApp.activate(ignoringOtherApps: true)
-            win.makeKeyAndOrderFront(nil)
             // Prompt se često otvori dok je ekran zaključan; AppKit prozor tad može
             // smjestiti na drugi ekran nego što je zatražen, pa nakon otključavanja
             // ostane u dimenzijama vanjskog monitora. Frame se zato postavlja izričito
             // i ponovno provjerava kad se ekrani slegnu.
             win.setFrame(screen.frame, display: true)
+            // Preko cijelog ekrana pomak ne treba — samo fade.
+            PanelFade.appear(win, slide: 0)
             window = win
             refitToScreenSoon()
         }
@@ -202,6 +240,11 @@ final class PromptController {
         model.end = max(end, model.start)
         // Nove granice mogu promijeniti visinu — poravnaj floating panel.
         DispatchQueue.main.async { [weak self] in self?.resizeFloatingToFit() }
+    }
+
+    /// Vraća već otvoreni prompt u prvi plan — "Zapiši sada" dok prompt visi.
+    func focus() {
+        window?.makeKeyAndOrderFront(nil)
     }
 
     func close() {

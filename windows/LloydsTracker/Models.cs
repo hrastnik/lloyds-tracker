@@ -52,7 +52,7 @@ internal static class PromptStyleExtensions
     public static string Label(this PromptStyle style) => style switch
     {
         PromptStyle.Floating => "Floating panel (kut ekrana)",
-        PromptStyle.Fullscreen => "Cijeli ekran (obavezan odgovor)",
+        PromptStyle.Fullscreen => "Cijeli ekran (preko svega)",
         _ => style.ToString()
     };
 }
@@ -127,20 +127,44 @@ public sealed class AppSettings
     public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }
 
-/// <summary>One block (or merged run of blocks) inside a prompt period, with its text.</summary>
+/// <summary>One block (or merged run of blocks) inside a prompt period, with its text.
+/// An empty <paramref name="Text"/> means the block was skipped — it isn't recorded, it
+/// goes back into the next prompt.</summary>
 public readonly record struct PromptSegment(DateTime Start, DateTime End, string Text);
+
+/// <summary>A period with no description — a skipped period carried forward.</summary>
+public readonly record struct PromptSpan(DateTime Start, DateTime End)
+{
+    public double Duration => (End - Start).TotalSeconds;
+}
 
 public sealed class PromptRequest
 {
     public readonly record struct PendingPause(DateTime Start, string Reason);
 
-    public DateTime Start { get; init; }
+    /// <summary>Start/End are settable because the engine merges adjacent carried periods
+    /// into the main one just before showing the prompt (see TrackerEngine.Show).</summary>
+    public DateTime Start { get; set; }
     /// <summary>Fixed end of the period; null means "until the moment of answering".</summary>
-    public DateTime? End { get; init; }
+    public DateTime? End { get; set; }
+    /// <summary>Skipped periods that aren't adjacent to the main one (e.g. a pause in
+    /// between) — shown as extra rows above it. Adjacent ones the engine merges in.</summary>
+    public IReadOnlyList<PromptSpan> Carried { get; set; } = Array.Empty<PromptSpan>();
     public PendingPause? PauseAfter { get; init; }
     public bool IsFinal { get; init; }
+    /// <summary>A manually triggered prompt ("Zapiši sada") — offers the "nastavljam s"
+    /// field next to the period.</summary>
+    public bool IsManual { get; init; }
     public string? Note { get; init; }
     public bool AllowSnooze { get; init; } = true;
+}
+
+/// <summary>The prompt's answer. Segments with no text were skipped.</summary>
+public sealed class PromptResult
+{
+    public IReadOnlyList<PromptSegment> Segments { get; init; } = Array.Empty<PromptSegment>();
+    /// <summary>Manual prompt: what the user continues with — becomes the next prompt's prefill.</summary>
+    public string? NextUp { get; init; }
 }
 
 // MARK: - Daily summary (grouping)

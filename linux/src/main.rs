@@ -1,6 +1,7 @@
 mod auto_stop;
 mod autostart;
 mod engine;
+mod entry_edit;
 mod icon;
 mod idle;
 mod models;
@@ -101,10 +102,10 @@ impl App {
                 }
                 let submit_request = request.clone();
                 let me = self.clone();
-                let on_submit = move |segments| {
+                let on_submit = move |result| {
                     let request = submit_request.clone();
                     me.clone()
-                        .mutate(move |engine| engine.on_prompt_submitted(&request, segments));
+                        .mutate(move |engine| engine.on_prompt_submitted(&request, result));
                 };
                 let me = self.clone();
                 let on_snooze = move || me.clone().mutate(|engine| engine.on_prompt_snoozed());
@@ -128,6 +129,12 @@ impl App {
                 let window = self.prompt.borrow().clone();
                 if let Some(window) = window {
                     window.extend(end);
+                }
+            }
+            Effect::FocusPrompt => {
+                let window = self.prompt.borrow().clone();
+                if let Some(window) = window {
+                    window.focus();
                 }
             }
             Effect::ShowStartupReminder { day_title, backfill_from } => {
@@ -248,6 +255,7 @@ impl App {
             TrayCommand::Start => self.clone().mutate(|engine| engine.start(None)),
             TrayCommand::Pause(minutes) => self.clone().mutate(|engine| engine.pause(minutes)),
             TrayCommand::Resume => self.clone().mutate(|engine| engine.resume()),
+            TrayCommand::PromptNow => self.clone().mutate(|engine| engine.manual_prompt()),
             TrayCommand::Stop => self.clone().mutate(|engine| engine.stop()),
             TrayCommand::OpenSummary => self.open_summary(),
             TrayCommand::OpenSettings => self.open_settings(),

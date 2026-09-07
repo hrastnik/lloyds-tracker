@@ -5,7 +5,8 @@ use chrono::{DateTime, Duration, Local};
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, CheckButton, PolicyType, ScrolledWindow, ToggleButton, Window};
 
-use crate::models::{Entry, EntryKind, Summarize};
+use crate::entry_edit::EntryEditWindow;
+use crate::models::{ChronoRow, Entry, EntryKind, Summarize};
 use crate::store::Store;
 use crate::theme::Fmt;
 use crate::ui;
@@ -285,6 +286,16 @@ impl SummaryWindow {
                     }
                     row.append(&ui::label(&Fmt::dur(chrono_row.duration()), &["mono", "muted-dim"]));
 
+                    let me = self.clone();
+                    let editable = chrono_row.clone();
+                    let edit = ui::button("✎", &["link"], move || me.edit_entry(&editable));
+                    edit.set_tooltip_text(Some(if chrono_row.is_merged() {
+                        "Ispravi unos (više blokova)"
+                    } else {
+                        "Ispravi unos"
+                    }));
+                    row.append(&edit);
+
                     let ids = chrono_row.ids.clone();
                     let key = self.day_key();
                     let me = self.clone();
@@ -307,6 +318,28 @@ impl SummaryWindow {
                 }
             }
         }
+    }
+
+    /// Ispravak unosa iz kronološkog reda. Što se dogodi s blokovima odlučuje engine:
+    /// promjena samo opisa/vrste ih zadržava, promjena vremena ih stopi u jedan unos.
+    fn edit_entry(self: &Rc<Self>, row: &ChronoRow) {
+        let key = self.day_key();
+        let me = self.clone();
+        let edited = row.clone();
+        EntryEditWindow::new(
+            &self.app.gtk,
+            &self.window,
+            row.clone(),
+            self.app.engine.borrow().history.clone(),
+            move |text, start, end, kind| {
+                let row = edited.clone();
+                let key = key.clone();
+                me.app.clone().mutate(move |engine| {
+                    engine.update_entries(&row, &key, &text, start, end, kind)
+                });
+                me.refresh();
+            },
+        );
     }
 
     fn copy(&self) {

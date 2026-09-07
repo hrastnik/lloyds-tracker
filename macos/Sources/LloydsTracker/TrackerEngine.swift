@@ -28,6 +28,12 @@ final class TrackerEngine: ObservableObject {
     /// Kraj perioda vidljivog "običnog" prompta; produžuje se dok čeka odgovor.
     /// nil znači da nema prompta koji se smije produžiti (npr. pauza/kraj dana).
     private var activePromptEnd: Date?
+    /// Preskočeni periodi koji nisu susjedni sljedećem promptu (npr. pauza između) —
+    /// nose se dalje kao zasebni redovi dok se ne popune ili dan ne završi.
+    private var carriedSpans: [PromptSpan] = []
+    /// Dan je zatvoren, a zadnji prompt još čeka odgovor — ništa se više ne zakazuje i
+    /// dan se ne smije zatvarati drugi put (inače bi tick vrtio isti prompt u krug).
+    private var awaitingFinalAnswer = false
     private var pausedSince: Date?
     private var isLocked = false
     private var lockedAt: Date?
@@ -114,6 +120,8 @@ final class TrackerEngine: ObservableObject {
         pausedSince = nil
         awaitingReturnSince = nil
         activePromptEnd = nil
+        carriedSpans = []
+        awaitingFinalAnswer = false
         nextPromptAt = alignedNextPrompt(after: now)
         autoStopWarningShown = false
         autoStopAt = nextAutoStop(after: now)
@@ -135,7 +143,8 @@ final class TrackerEngine: ObservableObject {
     /// `endTime` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
     /// vrijeme, a ne trenutak kad se odgovori na zadnji prompt (koji može biti i sutra).
     private func stop(at endTime: Date) {
-        guard isTracking else { return }
+        guard isTracking, !awaitingFinalAnswer else { return }
+        let now = Date()
         cancelAutoStop()
         if pauseUntil != nil {
             endManualPause(at: endTime)
@@ -158,12 +167,20 @@ final class TrackerEngine: ObservableObject {
             lastCovered = max(lastCovered, endTime)
         }
 
-        if periodEnd.timeIntervalSince(periodStart) > 60 {
+        let hasPeriod = periodEnd.timeIntervalSince(periodStart) > 60
+        if hasPeriod || !carriedSpans.isEmpty {
+            // Prompt koji je prenoćio (laptop zatvoren) odgovara se sutra, a period je
+            // odrezan na kraj svog dana — to treba i pisati, da unos ne izgleda pogrešno.
+            let overnight = Store.dayKey(endTime) != Store.dayKey(now)
+            awaitingFinalAnswer = true
             show(PromptRequest(
                 start: periodStart,
-                end: periodEnd,
+                // Prompt koji visi samo zbog preskočenih redova nema svoj period.
+                end: hasPeriod ? periodEnd : periodStart,
                 isFinal: true,
-                note: "Kraj dana — što si radio u zadnjem periodu?",
+                note: overnight
+                    ? "Prompt je prenoćio — period je odrezan na kraj radnog dana (\(Fmt.hhmm(endTime)))."
+                    : "Kraj dana — što si radio u zadnjem periodu?",
                 allowSnooze: false
             ))
         } else {
@@ -173,6 +190,8 @@ final class TrackerEngine: ObservableObject {
 
     private func finalizeStop() {
         isTracking = false
+        awaitingFinalAnswer = false
+        carriedSpans = []
         cancelAutoStop()
         nextPromptAt = nil
         sessionStart = nil
@@ -192,10 +211,11 @@ final class TrackerEngine: ObservableObject {
         }
         prompt.close()
         activePromptEnd = nil
-        if now.timeIntervalSince(lastCovered) > 60 {
+        let hasPeriod = now.timeIntervalSince(lastCovered) > 60
+        if hasPeriod || !carriedSpans.isEmpty {
             show(PromptRequest(
                 start: lastCovered,
-                end: now,
+                end: hasPeriod ? now : lastCovered,
                 note: "Prije pauze — na čemu si radio?",
                 allowSnooze: false
             ))
@@ -205,6 +225,32 @@ final class TrackerEngine: ObservableObject {
     func resume() {
         guard pauseUntil != nil else { return }
         endManualPause(at: Date())
+    }
+
+    /// Ručno pokrenut prompt ("Zapiši sada") — pita za period od zadnjeg zapisa do sada i
+    /// nudi polje "nastavljam s", pa sljedeći prompt kreće s tim pre-fillom. Ritam
+    /// promptanja ostaje netaknut: `nextPromptAt` se ne pomiče, a ako prompt dočeka
+    /// granicu intervala, period mu se samo produži (kao i običnom promptu).
+    func manualPrompt() {
+        guard isTracking, !awaitingFinalAnswer, pauseUntil == nil, awaitingReturnSince == nil else { return }
+        guard !prompt.isVisible else {
+            prompt.focus()
+            return
+        }
+        let now = Date()
+        activePromptEnd = now
+        show(PromptRequest(
+            start: lastCovered,
+            end: now,
+            isManual: true,
+            note: "Ručni zapis — spremi period do sada, pa (ako želiš) upiši čime nastavljaš.",
+            allowSnooze: false
+        ))
+    }
+
+    /// Je li "Zapiši sada" trenutno smisleno (meni ga inače skriva).
+    var canPromptNow: Bool {
+        isTracking && !awaitingFinalAnswer && pauseUntil == nil && awaitingReturnSince == nil
     }
 
     func snooze(minutes: Int) {
@@ -240,6 +286,48 @@ final class TrackerEngine: ObservableObject {
         } else {
             var day = Store.loadDay(dayKey)
             day.removeAll { set.contains($0.id) }
+            Store.saveDay(dayKey, entries: day)
+            objectWillChange.send()
+        }
+    }
+
+    /// Ispravlja unos(e) iza jednog reda kronološkog pregleda. Ako su vremena ostala ista,
+    /// mijenja se samo opis i vrsta svih blokova reda (spojeni red ostaje spojen). Ako su
+    /// vremena promijenjena, red postaje **jedan** unos — novi raspon se ne može smisleno
+    /// razdijeliti na stare granice blokova.
+    func updateEntries(
+        row: ChronoRow,
+        dayKey: String,
+        text: String,
+        start: Date,
+        end: Date,
+        kind: EntryKind
+    ) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, end > start else { return }
+        let ids = Set(row.ids)
+        let timesChanged = abs(start.timeIntervalSince(row.start)) > 1
+            || abs(end.timeIntervalSince(row.end)) > 1
+
+        func apply(to day: inout [Entry]) {
+            if timesChanged {
+                day.removeAll { ids.contains($0.id) }
+                day.append(Entry(id: row.ids[0], start: start, end: end, text: clean, kind: kind))
+            } else {
+                for i in day.indices where ids.contains(day[i].id) {
+                    day[i].text = clean
+                    day[i].kind = kind
+                }
+            }
+            day.sort { $0.start < $1.start }
+        }
+
+        if dayKey == currentDayKey {
+            apply(to: &entries)
+            Store.saveDay(currentDayKey, entries: entries)
+        } else {
+            var day = Store.loadDay(dayKey)
+            apply(to: &day)
             Store.saveDay(dayKey, entries: day)
             objectWillChange.send()
         }
@@ -287,6 +375,35 @@ final class TrackerEngine: ObservableObject {
         autoStopWarning.close()
         autoStopWarningShown = false
         autoStopAt = max(current, Date()).addingTimeInterval(TimeInterval(minutes * 60))
+    }
+
+    /// Kraj radnog dana za sesiju koja je "prenoćila" — nil dok je sesija još u svom danu.
+    ///
+    /// Laptop se zatvori s otvorenim promptom, a odgovor dođe sutra: bez ograde bi taj
+    /// period tekao cijelu noć i završio kao višesatni unos od jučer. Rez je vrijeme iz
+    /// sekcije "Automatsko zaustavljanje" na dan sesije, a ako je rad zabilježen i dalje
+    /// od njega (produženja iz upozorenja, ili je auto-stop isključen) — to se poštuje.
+    private func overnightCutoff(now: Date) -> Date? {
+        guard Store.dayKey(now) != currentDayKey else { return nil }
+        // Sesija koja legitimno prelazi u novi dan (start u 20:00 uz auto-stop u 16:00 →
+        // zaustavljanje je zakazano za sutra) se ne prekida.
+        if settings.autoStopEnabled, let stopAt = autoStopAt, stopAt > now { return nil }
+        guard let sessionDay = Fmt.dayKey.date(from: currentDayKey) else { return nil }
+        let configured = Calendar.current.date(
+            bySettingHour: min(max(settings.autoStopHour, 0), 23),
+            minute: min(max(settings.autoStopMinute, 0), 59),
+            second: 0,
+            of: sessionDay
+        ) ?? sessionDay
+        // Rad zabilježen i preko vremena iz postavki (auto-stop isključen, rad poslije
+        // ponoći) ne pomiče se unatrag — takav dan se zatvara na svojoj granici, u ponoć.
+        guard configured > lastCovered else {
+            let dayEnd = Calendar.current.date(
+                byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: sessionDay)
+            ) ?? sessionDay
+            return max(dayEnd, lastCovered)
+        }
+        return configured
     }
 
     private func showAutoStopWarning(stopAt: Date) {
@@ -383,7 +500,8 @@ final class TrackerEngine: ObservableObject {
     private func tick() {
         let now = Date()
         checkWorkdayStart(now: now)
-        guard isTracking else { return }
+        // Dan je zatvoren i čeka se odgovor na zadnji prompt — ništa se više ne zakazuje.
+        guard isTracking, !awaitingFinalAnswer else { return }
 
         // Prije svega ostalog — auto-stop vrijedi i kad je pauzirano ili se čeka povratak.
         if settings.autoStopEnabled, let stopAt = autoStopAt {
@@ -394,6 +512,13 @@ final class TrackerEngine: ObservableObject {
             if !autoStopWarningShown, stopAt.timeIntervalSince(now) <= autoStopLead {
                 showAutoStopWarning(stopAt: stopAt)
             }
+        }
+
+        // Sigurnosna ograda za sesiju koja je prenoćila (laptop zatvoren, često s otvorenim
+        // promptom): period se ne smije razvući u novi dan.
+        if let cutoff = overnightCutoff(now: now) {
+            stop(at: cutoff)
+            return
         }
 
         if let until = pauseUntil {
@@ -473,8 +598,13 @@ final class TrackerEngine: ObservableObject {
     }
 
     private func endManualPause(at now: Date) {
-        if let since = pausedSince, now > since {
-            entries.append(Entry(start: max(since, lastCovered), end: now, text: "Pauza", kind: .pause))
+        if let since = pausedSince {
+            // Ako je prompt prije pauze preskočen, taj period nije susjedan onome što
+            // slijedi (pauza je između) — nosi se dalje kao zasebni red.
+            carry(PromptSpan(start: lastCovered, end: since))
+            if now > since {
+                entries.append(Entry(start: max(since, lastCovered), end: now, text: "Pauza", kind: .pause))
+            }
         }
         pausedSince = nil
         pauseUntil = nil
@@ -486,41 +616,96 @@ final class TrackerEngine: ObservableObject {
     // MARK: - Prompt
 
     private func show(_ request: PromptRequest) {
+        var request = request
+        // Preskočeni periodi idu uz svaki prompt. Oni koji su susjedni glavnom periodu
+        // stapaju se u njega (jedan period koji se može razbiti `✂`), ostali se prikazuju
+        // kao zasebni redovi iznad.
+        var carried = carriedSpans
+        while let last = carried.last, abs(request.start.timeIntervalSince(last.end)) <= 1 {
+            request.start = last.start
+            // Prompt bez vlastitog perioda (samo preskočeni redovi) dobiva kraj stopljenog
+            // perioda — inače bi ostao degeneriran i to vrijeme bi propalo.
+            request.end = max(request.end ?? last.end, last.end)
+            carried.removeLast()
+        }
+        request.carried = carried
+
         if settings.soundEnabled {
             NSSound(named: "Glass")?.play()
         }
+        let submitted = request
         prompt.show(
             request: request,
             style: settings.promptStyle,
             history: history
-        ) { [weak self] segments in
-            self?.handleSubmit(request, segments: segments)
+        ) { [weak self] result in
+            self?.handleSubmit(submitted, result: result)
         } onSnooze: { [weak self] in
             self?.snooze(minutes: 5)
         }
     }
 
-    private func handleSubmit(_ request: PromptRequest, segments: [PromptSegment]) {
+    /// Doda preskočeni period u popis koji se nosi u sljedeći prompt; susjedni se spajaju.
+    private func carry(_ span: PromptSpan) {
+        guard span.duration > 60 else { return }
+        if let last = carriedSpans.last, abs(span.start.timeIntervalSince(last.end)) <= 1 {
+            carriedSpans[carriedSpans.count - 1].end = max(last.end, span.end)
+        } else {
+            carriedSpans.append(span)
+        }
+    }
+
+    /// Segment bez teksta je **preskočen** — ne bilježi se. Ako je na kraju perioda,
+    /// `lastCovered` ostaje gdje je bio, pa isti period sam iskoči u sljedećem promptu
+    /// (produžen za novi interval). Preskočeni period kojem iza slijedi zabilježeno
+    /// vrijeme nosi se dalje kao zasebni red.
+    private func handleSubmit(_ request: PromptRequest, result: PromptResult) {
         let now = Date()
         // Produženi kraj (ako je prompt čekao preko granica) ima prednost nad izvornim.
         let effectiveEnd = activePromptEnd ?? request.end
         activePromptEnd = nil
-        var coveredEnd = request.start
-        for seg in segments where seg.end.timeIntervalSince(seg.start) > 5 {
-            entries.append(Entry(start: seg.start, end: seg.end, text: seg.text, kind: .work))
-            // Kronološki redoslijed → zadnji segment završi kao history.first (prefill za idući prompt).
-            pushHistory(seg.text)
-            coveredEnd = max(coveredEnd, seg.end)
+        // Svi prikazani preskočeni periodi vraćeni su u odgovoru — popis se gradi ispočetka.
+        carriedSpans = []
+
+        let segments = result.segments.sorted { $0.start < $1.start }
+        let texts = segments.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        // Rep praznih segmenata glavnog perioda samo "otkriva" vrijeme natrag.
+        var coveredEnd = effectiveEnd ?? segments.last?.end ?? request.start
+        var lastFilled = segments.count - 1
+        while lastFilled >= 0, texts[lastFilled].isEmpty, segments[lastFilled].start >= request.start {
+            coveredEnd = segments[lastFilled].start
+            lastFilled -= 1
         }
+
+        for (i, seg) in segments.enumerated() where seg.end.timeIntervalSince(seg.start) > 5 {
+            if texts[i].isEmpty {
+                if i <= lastFilled { carry(PromptSpan(start: seg.start, end: seg.end)) }
+            } else {
+                entries.append(Entry(start: seg.start, end: seg.end, text: texts[i], kind: .work))
+                // Kronološki redoslijed → zadnji segment završi kao history.first (prefill za idući prompt).
+                pushHistory(texts[i])
+            }
+        }
+        // "Nastavljam s" iz ručnog prompta se ne bilježi kao unos, samo ide u povijest —
+        // time postaje pre-fill sljedećeg prompta.
+        if let nextUp = result.nextUp?.trimmingCharacters(in: .whitespacesAndNewlines), !nextUp.isEmpty {
+            pushHistory(nextUp)
+        }
+
         if let pending = request.pauseAfter, now > pending.start {
+            // Odsutnost ide u zapis kao pauza; preskočeni rad prije nje nije susjedan
+            // onome što slijedi, pa se nosi dalje zasebno.
+            carry(PromptSpan(start: coveredEnd, end: min(pending.start, effectiveEnd ?? pending.start)))
             entries.append(Entry(start: pending.start, end: now, text: pending.reason, kind: .pause))
             lastCovered = max(lastCovered, now)
         } else {
-            lastCovered = max(lastCovered, effectiveEnd ?? coveredEnd)
+            lastCovered = max(lastCovered, coveredEnd)
         }
         persistDay()
 
         if request.isFinal {
+            // Dan je zatvoren — preskočene periode se više nema kad pitati.
             finalizeStop()
         } else if pauseUntil == nil {
             nextPromptAt = alignedNextPrompt(after: max(now, lastCovered))

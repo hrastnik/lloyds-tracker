@@ -7,6 +7,8 @@ struct SummaryView: View {
     @State private var date = Date()
     @State private var mode: Mode = .grouped
     @State private var copied = false
+    /// Red kronološkog pregleda koji se ispravlja (nil = sheet zatvoren).
+    @State private var editing: ChronoRow?
 
     enum Mode: String, CaseIterable, Identifiable {
         case grouped = "Grupirano"
@@ -39,6 +41,16 @@ struct SummaryView: View {
         .background(Color.lloydsBlack)
         .preferredColorScheme(.dark)
         .tint(Color.lloydsYellow)
+        .sheet(item: $editing) { row in
+            EntryEditView(row: row, history: engine.history) { text, start, end, kind in
+                engine.updateEntries(
+                    row: row, dayKey: dayKey, text: text, start: start, end: end, kind: kind
+                )
+                editing = nil
+            } onCancel: {
+                editing = nil
+            }
+        }
     }
 
     private var header: some View {
@@ -182,6 +194,15 @@ struct SummaryView: View {
             Text(Fmt.dur(row.duration))
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Color.lloydsGray.opacity(0.7))
+            Button {
+                editing = row
+            } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.lloydsGray.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+            .help(row.isMerged ? "Ispravi unos (\(row.ids.count) bloka)" : "Ispravi unos")
             Button {
                 engine.deleteEntries(ids: row.ids, dayKey: dayKey)
             } label: {

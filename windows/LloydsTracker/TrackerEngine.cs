@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Media;
 using System.Windows.Forms;
 using WinFormsTimer = System.Windows.Forms.Timer;
@@ -34,6 +35,13 @@ public sealed class TrackerEngine : IDisposable
     /// <summary>End of the visible "regular" prompt's period; grows while it waits for an answer.
     /// null means there's no prompt that may be extended (e.g. pause / end-of-day).</summary>
     private DateTime? _activePromptEnd;
+    /// <summary>Skipped periods that aren't adjacent to the next prompt (e.g. a pause in
+    /// between) — carried forward as separate rows until they get filled in or the day ends.</summary>
+    private readonly List<PromptSpan> _carriedSpans = new();
+    /// <summary>The day is closed and the final prompt is still waiting for an answer — nothing
+    /// more gets scheduled, and the day must not be closed a second time (a tick would otherwise
+    /// loop the same prompt forever).</summary>
+    private bool _awaitingFinalAnswer;
     private DateTime? _pausedSince;
     private readonly SessionMonitor _session = new();
     private readonly WinFormsTimer _timer;
@@ -124,6 +132,8 @@ public sealed class TrackerEngine : IDisposable
         _pausedSince = null;
         AwaitingReturnSince = null;
         _activePromptEnd = null;
+        _carriedSpans.Clear();
+        _awaitingFinalAnswer = false;
         NextPromptAt = AlignedNextPrompt(now);
         _autoStopWarningShown = false;
         AutoStopAt = NextAutoStop(now);
@@ -148,7 +158,8 @@ public sealed class TrackerEngine : IDisposable
     /// may well be the next morning).</summary>
     private void Stop(DateTime endTime)
     {
-        if (!IsTracking) return;
+        if (!IsTracking || _awaitingFinalAnswer) return;
+        var now = DateTime.Now;
         CancelAutoStop();
         if (PauseUntil != null) EndManualPause(endTime);
         _prompt.Close();
@@ -169,14 +180,22 @@ public sealed class TrackerEngine : IDisposable
             _lastCovered = Max(_lastCovered, endTime);
         }
 
-        if ((periodEnd - periodStart).TotalSeconds > 60)
+        bool hasPeriod = (periodEnd - periodStart).TotalSeconds > 60;
+        if (hasPeriod || _carriedSpans.Count > 0)
         {
+            // A prompt that stayed up overnight (laptop closed) gets answered tomorrow, while its
+            // period was cut at the end of its own day — say so, or the entry looks wrong.
+            bool overnight = Store.DayKey(endTime) != Store.DayKey(now);
+            _awaitingFinalAnswer = true;
             Show(new PromptRequest
             {
                 Start = periodStart,
-                End = periodEnd,
+                // A prompt hanging only because of skipped rows has no period of its own.
+                End = hasPeriod ? periodEnd : periodStart,
                 IsFinal = true,
-                Note = "Kraj dana — što si radio u zadnjem periodu?",
+                Note = overnight
+                    ? $"Prompt je prenoćio — period je odrezan na kraj radnog dana ({Fmt.Hhmm(endTime)})."
+                    : "Kraj dana — što si radio u zadnjem periodu?",
                 AllowSnooze = false
             });
         }
@@ -189,6 +208,8 @@ public sealed class TrackerEngine : IDisposable
     private void FinalizeStop()
     {
         IsTracking = false;
+        _awaitingFinalAnswer = false;
+        _carriedSpans.Clear();
         CancelAutoStop();
         NextPromptAt = null;
         _sessionStart = null;
@@ -206,12 +227,13 @@ public sealed class TrackerEngine : IDisposable
         PauseUntil = minutes is int m ? now.AddMinutes(m) : DateTime.MaxValue;
         _prompt.Close();
         _activePromptEnd = null;
-        if ((now - _lastCovered).TotalSeconds > 60)
+        bool hasPeriod = (now - _lastCovered).TotalSeconds > 60;
+        if (hasPeriod || _carriedSpans.Count > 0)
         {
             Show(new PromptRequest
             {
                 Start = _lastCovered,
-                End = now,
+                End = hasPeriod ? now : _lastCovered,
                 Note = "Prije pauze — na čemu si radio?",
                 AllowSnooze = false
             });
@@ -224,6 +246,35 @@ public sealed class TrackerEngine : IDisposable
         if (PauseUntil == null) return;
         EndManualPause(DateTime.Now);
     }
+
+    /// <summary>A manually triggered prompt ("Zapiši sada") — asks about the period from the last
+    /// record until now and offers the "nastavljam s" field, so the next prompt starts with that
+    /// prefill. The prompting rhythm stays untouched: <see cref="NextPromptAt"/> doesn't move, and
+    /// if the prompt outlives an interval boundary its period is simply extended (like a regular
+    /// prompt's).</summary>
+    public void ManualPrompt()
+    {
+        if (!CanPromptNow) return;
+        if (_prompt.IsVisible)
+        {
+            _prompt.Focus();
+            return;
+        }
+        var now = DateTime.Now;
+        _activePromptEnd = now;
+        Show(new PromptRequest
+        {
+            Start = _lastCovered,
+            End = now,
+            IsManual = true,
+            Note = "Ručni zapis — spremi period do sada, pa (ako želiš) upiši čime nastavljaš.",
+            AllowSnooze = false
+        });
+    }
+
+    /// <summary>Whether "Zapiši sada" currently makes sense (the popover hides it otherwise).</summary>
+    public bool CanPromptNow
+        => IsTracking && !_awaitingFinalAnswer && PauseUntil == null && AwaitingReturnSince == null;
 
     public void Snooze(int minutes)
     {
@@ -272,6 +323,51 @@ public sealed class TrackerEngine : IDisposable
         }
     }
 
+    /// <summary>Corrects the entry (or entries) behind one row of the chronological view. If the
+    /// times are unchanged, only the text and kind of every block in the row change (a merged row
+    /// stays merged). If the times changed, the row becomes a <b>single</b> entry — the new range
+    /// can't be split along the old block boundaries in any meaningful way.</summary>
+    public void UpdateEntries(
+        ChronoRow row, string dayKey, string text, DateTime start, DateTime end, EntryKind kind)
+    {
+        string clean = text.Trim();
+        if (clean.Length == 0 || end <= start) return;
+        var ids = row.Ids.ToHashSet();
+        bool timesChanged = Math.Abs((start - row.Start).TotalSeconds) > 1
+            || Math.Abs((end - row.End).TotalSeconds) > 1;
+
+        void Apply(List<Entry> day)
+        {
+            if (timesChanged)
+            {
+                day.RemoveAll(e => ids.Contains(e.Id));
+                day.Add(new Entry(start, end, clean, kind) { Id = row.Ids[0] });
+            }
+            else
+            {
+                foreach (var e in day.Where(e => ids.Contains(e.Id)))
+                {
+                    e.Text = clean;
+                    e.Kind = kind;
+                }
+            }
+            day.Sort((a, b) => a.Start.CompareTo(b.Start));
+        }
+
+        if (dayKey == CurrentDayKey)
+        {
+            Apply(Entries);
+            Store.SaveDay(CurrentDayKey, Entries);
+        }
+        else
+        {
+            var day = Store.LoadDay(dayKey);
+            Apply(day);
+            Store.SaveDay(dayKey, day);
+        }
+        RaiseChanged();
+    }
+
     /// <summary>Next prompt aligned to the hour (e.g. 15 min → :00, :15, :30, :45).
     /// An interval that doesn't divide the hour (20, 45) resets each full hour.</summary>
     private DateTime AlignedNextPrompt(DateTime date)
@@ -312,6 +408,34 @@ public sealed class TrackerEngine : IDisposable
         _autoStopWarningShown = false;
         AutoStopAt = Max(current, DateTime.Now).AddMinutes(minutes);
         RaiseChanged();
+    }
+
+    /// <summary>End of the work day for a session that stayed up overnight — null while the
+    /// session is still inside its own day.
+    ///
+    /// The laptop gets closed with a prompt open and the answer comes tomorrow: without this rail
+    /// the period would run all night and end up as a multi-hour entry dated yesterday. The cut is
+    /// the time from the "Automatsko zaustavljanje" section on the session's day, and work already
+    /// recorded past it (extensions from the warning, or the auto-stop being off) is respected.</summary>
+    private DateTime? OvernightCutoff(DateTime now)
+    {
+        if (Store.DayKey(now) == CurrentDayKey) return null;
+        // A session that legitimately crosses into the new day (start at 20:00 with auto-stop at
+        // 16:00 → the stop is scheduled for tomorrow) isn't interrupted.
+        if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt && stopAt > now) return null;
+        if (!DateTime.TryParseExact(CurrentDayKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var sessionDay))
+            return null;
+        int hour = Math.Clamp(Settings.AutoStopHour, 0, 23);
+        int minute = Math.Clamp(Settings.AutoStopMinute, 0, 59);
+        var configured = new DateTime(
+            sessionDay.Year, sessionDay.Month, sessionDay.Day, hour, minute, 0, DateTimeKind.Local);
+        // Work recorded past the configured time too (auto-stop off, work after midnight) isn't
+        // moved backwards — such a day closes at its own boundary, midnight.
+        if (configured > _lastCovered) return configured;
+        var dayEnd = new DateTime(
+            sessionDay.Year, sessionDay.Month, sessionDay.Day, 0, 0, 0, DateTimeKind.Local).AddDays(1);
+        return Max(dayEnd, _lastCovered);
     }
 
     private void ShowAutoStopWarning(DateTime stopAt)
@@ -397,7 +521,8 @@ public sealed class TrackerEngine : IDisposable
     {
         var now = DateTime.Now;
         CheckWorkdayStart(now);
-        if (!IsTracking) return;
+        // The day is closed and the final prompt is pending — nothing more gets scheduled.
+        if (!IsTracking || _awaitingFinalAnswer) return;
 
         // Before anything else — the auto-stop applies while paused or awaiting a return too.
         if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt)
@@ -409,6 +534,14 @@ public sealed class TrackerEngine : IDisposable
             }
             if (!_autoStopWarningShown && (stopAt - now).TotalSeconds <= AutoStopLead)
                 ShowAutoStopWarning(stopAt);
+        }
+
+        // The safety rail for a session that stayed up overnight (laptop closed, often with a
+        // prompt open): the period must not stretch into the new day.
+        if (OvernightCutoff(now) is DateTime cutoff)
+        {
+            Stop(cutoff);
+            return;
         }
 
         if (PauseUntil is DateTime until)
@@ -507,8 +640,14 @@ public sealed class TrackerEngine : IDisposable
 
     private void EndManualPause(DateTime now)
     {
-        if (_pausedSince is DateTime since && now > since)
-            Entries.Add(new Entry(Max(since, _lastCovered), now, "Pauza", EntryKind.Pause));
+        if (_pausedSince is DateTime since)
+        {
+            // If the prompt before the pause was skipped, that period isn't adjacent to whatever
+            // comes next (the pause sits between) — it gets carried forward as a separate row.
+            Carry(new PromptSpan(_lastCovered, since));
+            if (now > since)
+                Entries.Add(new Entry(Max(since, _lastCovered), now, "Pauza", EntryKind.Pause));
+        }
         _pausedSince = null;
         PauseUntil = null;
         _lastCovered = Max(_lastCovered, now);
@@ -521,43 +660,107 @@ public sealed class TrackerEngine : IDisposable
 
     private void Show(PromptRequest request)
     {
+        // Skipped periods come along with every prompt. Those adjacent to the main period merge
+        // into it (one period that can be split with `✂`), the rest are shown as separate rows
+        // above it.
+        var carried = new List<PromptSpan>(_carriedSpans);
+        while (carried.Count > 0 && Math.Abs((request.Start - carried[^1].End).TotalSeconds) <= 1)
+        {
+            var last = carried[^1];
+            request.Start = last.Start;
+            // A prompt with no period of its own (only skipped rows) takes the merged period's
+            // end — otherwise it would stay degenerate and that time would be lost.
+            request.End = Max(request.End ?? last.End, last.End);
+            carried.RemoveAt(carried.Count - 1);
+        }
+        request.Carried = carried;
+
         if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
         _prompt.Show(
             request,
             Settings.PromptStyle,
             History,
-            onSubmit: segments => HandleSubmit(request, segments),
+            onSubmit: result => HandleSubmit(request, result),
             onSnooze: () => Snooze(5));
     }
 
-    private void HandleSubmit(PromptRequest request, IReadOnlyList<PromptSegment> segments)
+    /// <summary>Adds a skipped period to the list carried into the next prompt; adjacent ones merge.</summary>
+    private void Carry(PromptSpan span)
+    {
+        if (span.Duration <= 60) return;
+        if (_carriedSpans.Count > 0 && Math.Abs((span.Start - _carriedSpans[^1].End).TotalSeconds) <= 1)
+        {
+            var last = _carriedSpans[^1];
+            _carriedSpans[^1] = new PromptSpan(last.Start, Max(last.End, span.End));
+        }
+        else
+        {
+            _carriedSpans.Add(span);
+        }
+    }
+
+    /// <summary>A segment with no text was <b>skipped</b> — it isn't recorded. If it sits at the end
+    /// of the period, <c>_lastCovered</c> stays where it was, so the same period pops up in the next
+    /// prompt (extended by a new interval). A skipped period followed by recorded time is carried
+    /// forward as a separate row.</summary>
+    private void HandleSubmit(PromptRequest request, PromptResult result)
     {
         var now = DateTime.Now;
         // Extended end (if the prompt waited across boundaries) takes precedence over the original.
         var effectiveEnd = _activePromptEnd ?? request.End;
         _activePromptEnd = null;
-        var coveredEnd = request.Start;
-        foreach (var seg in segments)
+        // Every skipped period shown came back in the answer — the list is rebuilt from scratch.
+        _carriedSpans.Clear();
+
+        var segments = result.Segments.OrderBy(s => s.Start).ToList();
+        var texts = segments.Select(s => s.Text.Trim()).ToList();
+
+        // A tail of empty segments in the main period just "uncovers" time backwards.
+        var coveredEnd = effectiveEnd ?? (segments.Count > 0 ? segments[^1].End : request.Start);
+        int lastFilled = segments.Count - 1;
+        while (lastFilled >= 0 && texts[lastFilled].Length == 0
+               && segments[lastFilled].Start >= request.Start)
         {
-            if ((seg.End - seg.Start).TotalSeconds <= 5) continue;
-            Entries.Add(new Entry(seg.Start, seg.End, seg.Text, EntryKind.Work));
-            // Chronological order → last segment ends up as history[0] (prefill for the next prompt).
-            PushHistory(seg.Text);
-            coveredEnd = Max(coveredEnd, seg.End);
+            coveredEnd = segments[lastFilled].Start;
+            lastFilled--;
         }
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var seg = segments[i];
+            if ((seg.End - seg.Start).TotalSeconds <= 5) continue;
+            if (texts[i].Length == 0)
+            {
+                if (i <= lastFilled) Carry(new PromptSpan(seg.Start, seg.End));
+            }
+            else
+            {
+                Entries.Add(new Entry(seg.Start, seg.End, texts[i], EntryKind.Work));
+                // Chronological order → last segment ends up as history[0] (prefill for the next prompt).
+                PushHistory(texts[i]);
+            }
+        }
+        // "Nastavljam s" from a manual prompt isn't recorded as an entry, it only goes into the
+        // history — which makes it the next prompt's prefill.
+        if (result.NextUp?.Trim() is string nextUp && nextUp.Length > 0) PushHistory(nextUp);
+
         if (request.PauseAfter is PromptRequest.PendingPause pending && now > pending.Start)
         {
+            // The absence is recorded as a pause; skipped work before it isn't adjacent to what
+            // follows, so it gets carried forward separately.
+            Carry(new PromptSpan(coveredEnd, Min(pending.Start, effectiveEnd ?? pending.Start)));
             Entries.Add(new Entry(pending.Start, now, pending.Reason, EntryKind.Pause));
             _lastCovered = Max(_lastCovered, now);
         }
         else
         {
-            _lastCovered = Max(_lastCovered, effectiveEnd ?? coveredEnd);
+            _lastCovered = Max(_lastCovered, coveredEnd);
         }
         PersistDay();
 
         if (request.IsFinal)
         {
+            // The day is closed — there's no later prompt to ask about skipped periods.
             FinalizeStop();
         }
         else if (PauseUntil == null)

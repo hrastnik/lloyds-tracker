@@ -59,7 +59,8 @@ final class AutoStopWarningController {
         let f = PromptController.promptScreen().visibleFrame
         panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.minY + 24))
         panel.isReleasedWhenClosed = false
-        panel.makeKeyAndOrderFront(nil)
+        // Sjedi u donjem kutu, pa se "diže" odozdo.
+        PanelFade.appear(panel, slide: -10)
         window = panel
     }
 

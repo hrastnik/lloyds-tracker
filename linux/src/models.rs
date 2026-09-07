@@ -87,7 +87,7 @@ impl PromptStyle {
     pub fn label(self) -> &'static str {
         match self {
             PromptStyle::Floating => "Floating panel (kut ekrana)",
-            PromptStyle::Fullscreen => "Cijeli ekran (obavezan odgovor)",
+            PromptStyle::Fullscreen => "Cijeli ekran (preko svega)",
         }
     }
 }
@@ -184,11 +184,27 @@ impl Default for AppSettings {
 // MARK: - Prompt
 
 /// Jedan blok (ili spojeni niz blokova) unutar prompt perioda, s pripadajućim opisom.
+/// Prazan `text` znači da je blok **preskočen** — ne bilježi se, nego se vraća u sljedeći
+/// prompt.
 #[derive(Debug, Clone)]
 pub struct PromptSegment {
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
     pub text: String,
+}
+
+/// Period bez opisa — preskočeni period koji se nosi u sljedeći prompt.
+#[derive(Debug, Clone, Copy)]
+pub struct PromptSpan {
+    pub start: DateTime<Local>,
+    pub end: DateTime<Local>,
+}
+
+impl PromptSpan {
+    /// Trajanje u sekundama.
+    pub fn duration(&self) -> f64 {
+        (self.end - self.start).num_milliseconds() as f64 / 1000.0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -202,16 +218,38 @@ pub struct PromptRequest {
     pub start: DateTime<Local>,
     /// Fiksni kraj perioda; None znači "do trenutka odgovora".
     pub end: Option<DateTime<Local>>,
+    /// Preskočeni periodi koji nisu susjedni glavnom (npr. između je pauza) — prikazuju se
+    /// kao zasebni redovi iznad njega. Susjedne engine stopi u glavni period.
+    pub carried: Vec<PromptSpan>,
     pub pause_after: Option<PendingPause>,
     pub is_final: bool,
+    /// Ručno pokrenut prompt ("Zapiši sada") — nosi i polje "nastavljam s".
+    pub is_manual: bool,
     pub note: Option<String>,
     pub allow_snooze: bool,
 }
 
 impl PromptRequest {
     pub fn new(start: DateTime<Local>, end: Option<DateTime<Local>>) -> Self {
-        PromptRequest { start, end, pause_after: None, is_final: false, note: None, allow_snooze: true }
+        PromptRequest {
+            start,
+            end,
+            carried: Vec::new(),
+            pause_after: None,
+            is_final: false,
+            is_manual: false,
+            note: None,
+            allow_snooze: true,
+        }
     }
+}
+
+/// Odgovor na prompt. Segmenti bez teksta su preskočeni.
+#[derive(Debug, Clone, Default)]
+pub struct PromptResult {
+    pub segments: Vec<PromptSegment>,
+    /// Ručni prompt: čime korisnik nastavlja — postaje pre-fill sljedećeg prompta.
+    pub next_up: Option<String>,
 }
 
 // MARK: - Dnevni pregled (grupiranje)
@@ -223,6 +261,7 @@ pub struct GroupSummary {
 }
 
 /// Red kronološkog pregleda — jedan unos ili niz spojenih susjednih unosa istog naziva.
+#[derive(Debug, Clone)]
 pub struct ChronoRow {
     pub ids: Vec<Uuid>,
     pub start: DateTime<Local>,

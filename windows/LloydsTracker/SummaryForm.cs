@@ -10,6 +10,8 @@ internal sealed class SummaryForm : Form
     private enum ViewMode { Grouped, Chronological }
 
     private readonly TrackerEngine _engine;
+    /// <summary>Tooltip za gumbe u redovima (macOS `.help(…)`).</summary>
+    private readonly ToolTip _tips = new();
     private DateTime _date = DateTime.Now;
     private ViewMode _mode = ViewMode.Grouped;
 
@@ -274,8 +276,14 @@ internal sealed class SummaryForm : Form
         del.Click += (_, _) => { _engine.DeleteEntries(entry.Ids, DayKey); Rebuild(); };
         row.Controls.Add(del);
 
+        // Ispravak unosa — spojeni red se ispravlja kao jedna cjelina (vidi EntryEditForm).
+        var edit = new FlatButton { Text = "✎", TextColor = Palette.Gray.With(0.5), Font = Brand.Ui(9f), BackColor = fill, Size = new Size(Brand.S(22), Brand.S(22)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(del.Left - Brand.S(2) - Brand.S(22), Brand.S(4)) };
+        _tips.SetToolTip(edit, entry.IsMerged ? $"Ispravi unos ({entry.Ids.Count} bloka)" : "Ispravi unos");
+        edit.Click += (_, _) => EditEntry(entry);
+        row.Controls.Add(edit);
+
         var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8.5f), ForeColor = Palette.Gray.With(0.7), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        dur.Location = new Point(del.Left - Brand.S(8) - dur.PreferredWidth, Brand.S(7));
+        dur.Location = new Point(edit.Left - Brand.S(8) - dur.PreferredWidth, Brand.S(7));
         row.Controls.Add(dur);
 
         int textRight = dur.Left - Brand.S(8);
@@ -293,6 +301,15 @@ internal sealed class SummaryForm : Form
 
         _content.Controls.Add(row);
         return y + Brand.S(30) + Brand.S(6);
+    }
+
+    /// <summary>Ispravak jednog reda kronološkog pregleda — opis, vrijeme i vrsta.</summary>
+    private void EditEntry(ChronoRow entry)
+    {
+        using var dialog = new EntryEditForm(entry, _engine.History);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        _engine.UpdateEntries(entry, DayKey, dialog.EntryText, dialog.EntryStart, dialog.EntryEnd, dialog.Kind);
+        Rebuild();
     }
 
     // MARK: - Footer actions

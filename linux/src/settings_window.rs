@@ -82,15 +82,15 @@ impl SettingsWindow {
             ),
 
             workday_enabled: Switch::new(),
-            workday_hour: spin(0.0, 23.0),
-            workday_minute: spin(0.0, 59.0),
+            workday_hour: ui::spin(0.0, 23.0),
+            workday_minute: ui::spin(0.0, 59.0),
             workday_backfill: Switch::new(),
             workday_caption: ui::wrapped("", &["caption"], 58),
             backfill_caption: ui::wrapped("", &["caption"], 58),
 
             auto_stop_enabled: Switch::new(),
-            auto_stop_hour: spin(0.0, 23.0),
-            auto_stop_minute: spin(0.0, 59.0),
+            auto_stop_hour: ui::spin(0.0, 23.0),
+            auto_stop_minute: ui::spin(0.0, 59.0),
 
             idle_enabled: Switch::new(),
             idle_threshold: dropdown_minutes(&IDLE_THRESHOLDS),
@@ -169,14 +169,14 @@ impl SettingsWindow {
         let start = section("POČETAK RADNOG DANA");
         start.append(&row("Podsjetnik u zadano vrijeme", &self.workday_enabled));
         start.append(&self.workday_caption);
-        start.append(&row("Vrijeme", &time_box(&self.workday_hour, &self.workday_minute)));
+        start.append(&row("Vrijeme", &ui::time_box(&self.workday_hour, &self.workday_minute)));
         start.append(&row("Ponudi i nadoknadu od tog vremena", &self.workday_backfill));
         start.append(&self.backfill_caption);
         page.append(&start);
 
         let auto_stop = section("AUTOMATSKO ZAUSTAVLJANJE");
         auto_stop.append(&row("Zaustavi tracking u zadano vrijeme", &self.auto_stop_enabled));
-        auto_stop.append(&row("Vrijeme", &time_box(&self.auto_stop_hour, &self.auto_stop_minute)));
+        auto_stop.append(&row("Vrijeme", &ui::time_box(&self.auto_stop_hour, &self.auto_stop_minute)));
         auto_stop.append(&ui::wrapped(
             "Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi \
              samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut \
@@ -385,28 +385,6 @@ fn row_label(caption: &str, value: &Label) -> GtkBox {
     r.append(&ui::label(caption, &[]));
     r.append(value);
     r
-}
-
-fn time_box(hour: &SpinButton, minute: &SpinButton) -> GtkBox {
-    let b = ui::hbox(4);
-    b.append(hour);
-    b.append(&ui::label(":", &["muted"]));
-    b.append(minute);
-    b
-}
-
-fn spin(min: f64, max: f64) -> SpinButton {
-    let s = SpinButton::with_range(min, max, 1.0);
-    s.set_orientation(gtk4::Orientation::Vertical);
-    s.set_wrap(true);
-    s.set_numeric(true);
-    s.set_width_chars(2);
-    // Uvijek dvoznamenkasto (08, ne 8) — isti oblik kao HH:mm drugdje u UI-u.
-    s.connect_output(|s| {
-        s.set_text(&format!("{:02}", s.value_as_int()));
-        gtk4::glib::Propagation::Stop
-    });
-    s
 }
 
 fn dropdown_minutes(values: &[i64]) -> DropDown {

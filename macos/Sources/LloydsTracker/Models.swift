@@ -24,7 +24,7 @@ enum PromptStyle: String, Codable, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .floating: return "Floating panel (kut ekrana)"
-        case .fullscreen: return "Cijeli ekran (obavezan odgovor)"
+        case .fullscreen: return "Cijeli ekran (preko svega)"
         }
     }
 }
@@ -87,10 +87,19 @@ struct AppSettings: Codable, Equatable {
 }
 
 /// Jedan blok (ili spojeni niz blokova) unutar prompt perioda, s pripadajućim opisom.
+/// Prazan `text` znači da je blok preskočen — ne bilježi se, nego se vraća u sljedeći prompt.
 struct PromptSegment {
     var start: Date
     var end: Date
     var text: String
+}
+
+/// Vremenski period bez opisa — preskočeni period koji se nosi dalje.
+struct PromptSpan: Equatable {
+    var start: Date
+    var end: Date
+
+    var duration: TimeInterval { end.timeIntervalSince(start) }
 }
 
 struct PromptRequest {
@@ -102,10 +111,22 @@ struct PromptRequest {
     var start: Date
     /// Fiksni kraj perioda; nil znači "do trenutka odgovora".
     var end: Date?
+    /// Preskočeni periodi koji nisu susjedni glavnom (npr. pauza između) — prikazuju se
+    /// kao dodatni redovi iznad njega. Susjedne engine stopi u glavni period.
+    var carried: [PromptSpan] = []
     var pauseAfter: PendingPause?
     var isFinal = false
+    /// Ručno pokrenut prompt ("Zapiši sada") — uz period nudi i polje "nastavljam s".
+    var isManual = false
     var note: String?
     var allowSnooze = true
+}
+
+/// Odgovor iz prompta. Segmenti bez teksta su preskočeni.
+struct PromptResult {
+    var segments: [PromptSegment]
+    /// Ručni prompt: čime korisnik nastavlja — postaje pre-fill sljedećeg prompta.
+    var nextUp: String?
 }
 
 // MARK: - Dnevni pregled (grupiranje)

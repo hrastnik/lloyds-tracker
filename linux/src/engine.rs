@@ -4,7 +4,8 @@ use uuid::Uuid;
 use crate::autostart::LaunchAtLogin;
 use crate::idle::IdleMonitor;
 use crate::models::{
-    AppSettings, Entry, EntryKind, PendingPause, PromptRequest, PromptSegment, PromptStyle, Summarize,
+    AppSettings, ChronoRow, Entry, EntryKind, PendingPause, PromptRequest, PromptResult, PromptSpan,
+    PromptStyle, Summarize,
 };
 use crate::session::SessionMonitor;
 use crate::store::Store;
@@ -44,6 +45,8 @@ pub enum Effect {
     ClosePrompt,
     /// Produži period vidljivog prompta do nove granice (skupno vrijeme).
     ExtendPrompt(DateTime<Local>),
+    /// Vrati već otvoreni prompt u prvi plan — "Zapiši sada" dok prompt visi.
+    FocusPrompt,
     ShowStartupReminder {
         day_title: String,
         backfill_from: Option<DateTime<Local>>,
@@ -78,6 +81,12 @@ pub struct TrackerEngine {
     /// Kraj perioda vidljivog "običnog" prompta; produžuje se dok čeka odgovor.
     /// None znači da nema prompta koji se smije produžiti (npr. pauza/kraj dana).
     active_prompt_end: Option<DateTime<Local>>,
+    /// Preskočeni periodi koji nisu susjedni sljedećem promptu (npr. između je pauza) —
+    /// nose se dalje kao zasebni redovi dok se ne popune ili dok dan ne završi.
+    carried_spans: Vec<PromptSpan>,
+    /// Dan je zatvoren, a zadnji prompt još čeka odgovor — više se ništa ne zakazuje, a
+    /// dan se ne smije zatvoriti dvaput (tick bi inače u krug otvarao isti prompt).
+    awaiting_final_answer: bool,
     paused_since: Option<DateTime<Local>>,
     is_locked: bool,
     locked_at: Option<DateTime<Local>>,
@@ -126,6 +135,8 @@ impl TrackerEngine {
             current_day_key,
             last_covered: now,
             active_prompt_end: None,
+            carried_spans: Vec::new(),
+            awaiting_final_answer: false,
             paused_since: None,
             is_locked: false,
             locked_at: None,
@@ -192,6 +203,8 @@ impl TrackerEngine {
         self.paused_since = None;
         self.awaiting_return_since = None;
         self.active_prompt_end = None;
+        self.carried_spans.clear();
+        self.awaiting_final_answer = false;
         self.next_prompt_at = Some(self.aligned_next_prompt(now));
         self.auto_stop_warning_shown = false;
         self.auto_stop_at = self.next_auto_stop(now);
@@ -216,9 +229,10 @@ impl TrackerEngine {
     /// `end_time` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
     /// vrijeme, a ne trenutak kad se odgovori na zadnji prompt (koji može biti i sutra).
     fn stop_at(&mut self, end_time: DateTime<Local>) {
-        if !self.is_tracking {
+        if !self.is_tracking || self.awaiting_final_answer {
             return;
         }
+        let now = Local::now();
         self.cancel_auto_stop();
         if self.pause_until.is_some() {
             self.end_manual_pause(end_time);
@@ -240,10 +254,24 @@ impl TrackerEngine {
             self.last_covered = self.last_covered.max(end_time);
         }
 
-        if (period_end - period_start).num_seconds() > 60 {
-            let mut request = PromptRequest::new(period_start, Some(period_end));
+        let has_period = (period_end - period_start).num_seconds() > 60;
+        if has_period || !self.carried_spans.is_empty() {
+            // Prompt koji je prenoćio (zatvoren laptop) odgovara se sutra, a period mu je
+            // odrezan na kraj *njegovog* dana — to mora pisati, inače unos izgleda pogrešno.
+            let overnight = Store::day_key(end_time) != Store::day_key(now);
+            self.awaiting_final_answer = true;
+            // Prompt koji visi samo zbog preskočenih redova nema svoj period.
+            let mut request =
+                PromptRequest::new(period_start, Some(if has_period { period_end } else { period_start }));
             request.is_final = true;
-            request.note = Some("Kraj dana — što si radio u zadnjem periodu?".into());
+            request.note = Some(if overnight {
+                format!(
+                    "Prompt je prenoćio — period je odrezan na kraj radnog dana ({}).",
+                    Fmt::hhmm(end_time)
+                )
+            } else {
+                "Kraj dana — što si radio u zadnjem periodu?".into()
+            });
             request.allow_snooze = false;
             self.show_prompt(request);
         } else {
@@ -253,6 +281,8 @@ impl TrackerEngine {
 
     fn finalize_stop(&mut self) {
         self.is_tracking = false;
+        self.awaiting_final_answer = false;
+        self.carried_spans.clear();
         self.cancel_auto_stop();
         self.next_prompt_at = None;
         self.awaiting_return_since = None;
@@ -273,8 +303,12 @@ impl TrackerEngine {
         });
         self.close_prompt();
         self.active_prompt_end = None;
-        if (now - self.last_covered).num_seconds() > 60 {
-            let mut request = PromptRequest::new(self.last_covered, Some(now));
+        let has_period = (now - self.last_covered).num_seconds() > 60;
+        if has_period || !self.carried_spans.is_empty() {
+            let mut request = PromptRequest::new(
+                self.last_covered,
+                Some(if has_period { now } else { self.last_covered }),
+            );
             request.note = Some("Prije pauze — na čemu si radio?".into());
             request.allow_snooze = false;
             self.show_prompt(request);
@@ -286,6 +320,36 @@ impl TrackerEngine {
             return;
         }
         self.end_manual_pause(Local::now());
+    }
+
+    /// Ručno pokrenut prompt ("Zapiši sada") — pita za period od zadnjeg zapisa do sada i
+    /// nudi polje "nastavljam s", pa sljedeći prompt kreće s tim opisom. Ritam promptanja se
+    /// ne dira: `next_prompt_at` se ne pomiče, a ako prompt preživi granicu intervala, period
+    /// mu se samo produži (kao i običnom promptu).
+    pub fn manual_prompt(&mut self) {
+        if !self.can_prompt_now() {
+            return;
+        }
+        if self.prompt_visible {
+            self.effects.push(Effect::FocusPrompt);
+            return;
+        }
+        let now = Local::now();
+        self.active_prompt_end = Some(now);
+        let mut request = PromptRequest::new(self.last_covered, Some(now));
+        request.is_manual = true;
+        request.note =
+            Some("Ručni zapis — spremi period do sada, pa (ako želiš) upiši čime nastavljaš.".into());
+        request.allow_snooze = false;
+        self.show_prompt(request);
+    }
+
+    /// Ima li "Zapiši sada" sad smisla (inače ga meni u traci ne prikazuje).
+    pub fn can_prompt_now(&self) -> bool {
+        self.is_tracking
+            && !self.awaiting_final_answer
+            && self.pause_until.is_none()
+            && self.awaiting_return_since.is_none()
     }
 
     pub fn snooze(&mut self, minutes: i64) {
@@ -305,6 +369,55 @@ impl TrackerEngine {
         } else {
             let mut day = Store::load_day(day_key);
             day.retain(|e| !ids.contains(&e.id));
+            Store::save_day(day_key, &day);
+        }
+    }
+
+    /// Ispravlja unos (ili unose) iza jednog reda kronološkog pregleda. Ako vremena ostanu
+    /// ista, mijenja se samo opis i vrsta svakog bloka u redu (spojeni red ostaje spojen). Ako
+    /// su vremena promijenjena, red postaje **jedan** unos — novi raspon se nema smisla
+    /// razbijati po starim granicama blokova.
+    pub fn update_entries(
+        &mut self,
+        row: &ChronoRow,
+        day_key: &str,
+        text: &str,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+        kind: EntryKind,
+    ) {
+        let clean = text.trim().to_string();
+        if clean.is_empty() || end <= start {
+            return;
+        }
+        let times_changed = (start - row.start).num_seconds().abs() > 1
+            || (end - row.end).num_seconds().abs() > 1;
+        let ids = row.ids.clone();
+        let keep_id = ids[0];
+
+        let apply = |day: &mut Vec<Entry>| {
+            if times_changed {
+                day.retain(|e| !ids.contains(&e.id));
+                let mut entry = Entry::new(start, end, clean.clone(), kind);
+                entry.id = keep_id;
+                day.push(entry);
+            } else {
+                for e in day.iter_mut().filter(|e| ids.contains(&e.id)) {
+                    e.text = clean.clone();
+                    e.kind = kind;
+                }
+            }
+            day.sort_by_key(|e| e.start);
+        };
+
+        if day_key == self.current_day_key {
+            let mut day = std::mem::take(&mut self.entries);
+            apply(&mut day);
+            self.entries = day;
+            Store::save_day(&self.current_day_key, &self.entries);
+        } else {
+            let mut day = Store::load_day(day_key);
+            apply(&mut day);
             Store::save_day(day_key, &day);
         }
     }
@@ -346,6 +459,41 @@ impl TrackerEngine {
         self.effects.push(Effect::CloseAutoStopWarning);
         self.auto_stop_warning_shown = false;
         self.auto_stop_at = Some(current.max(Local::now()) + Duration::minutes(minutes));
+    }
+
+    /// Kraj radnog dana za sesiju koja je prenoćila — None dok je sesija još u svom danu.
+    ///
+    /// Laptop se zatvori s otvorenim promptom, a odgovor dođe sutra: bez ove ograde bi period
+    /// tekao cijelu noć i završio kao višesatni unos s jučerašnjim datumom. Rez je vrijeme iz
+    /// sekcije "Automatsko zaustavljanje" na dan sesije, a rad koji je već zabilježen i preko
+    /// njega (produženja iz upozorenja, ili isključen auto-stop) se poštuje.
+    fn overnight_cutoff(&self, now: DateTime<Local>) -> Option<DateTime<Local>> {
+        if Store::day_key(now) == self.current_day_key {
+            return None;
+        }
+        // Sesija koja legitimno prelazi u novi dan (start u 20:00 uz auto-stop 16:00 → stop je
+        // zakazan za sutra) se ne prekida.
+        if self.settings.auto_stop_enabled && self.auto_stop_at.is_some_and(|at| at > now) {
+            return None;
+        }
+        let day = chrono::NaiveDate::parse_from_str(&self.current_day_key, "%Y-%m-%d").ok()?;
+        let hour = self.settings.auto_stop_hour.min(23);
+        let minute = self.settings.auto_stop_minute.min(59);
+        let configured = day
+            .and_hms_opt(hour, minute, 0)
+            .and_then(|naive| Local.from_local_datetime(&naive).single());
+        // Rad zabilježen i preko zadanog vremena (isključen auto-stop, rad poslije ponoći) se
+        // ne vuče unatrag — takav dan se zatvara na svojoj granici, u ponoć.
+        match configured {
+            Some(at) if at > self.last_covered => Some(at),
+            _ => {
+                let day_end = day
+                    .succ_opt()?
+                    .and_hms_opt(0, 0, 0)
+                    .and_then(|naive| Local.from_local_datetime(&naive).single())?;
+                Some(day_end.max(self.last_covered))
+            }
+        }
     }
 
     fn show_auto_stop_warning(&mut self, stop_at: DateTime<Local>) {
@@ -481,7 +629,8 @@ impl TrackerEngine {
         self.is_locked = locked;
 
         self.check_workday_start(now);
-        if !self.is_tracking {
+        // Dan je zatvoren, a zadnji prompt čeka odgovor — više se ništa ne zakazuje.
+        if !self.is_tracking || self.awaiting_final_answer {
             return;
         }
 
@@ -498,6 +647,13 @@ impl TrackerEngine {
                     self.show_auto_stop_warning(stop_at);
                 }
             }
+        }
+
+        // Ograda za sesiju koja je prenoćila (zatvoren laptop, često s otvorenim promptom):
+        // period ne smije prijeći u novi dan.
+        if let Some(cutoff) = self.overnight_cutoff(now) {
+            self.stop_at(cutoff);
+            return;
         }
 
         if let Some(pause) = self.pause_until {
@@ -591,6 +747,9 @@ impl TrackerEngine {
 
     fn end_manual_pause(&mut self, now: DateTime<Local>) {
         if let Some(since) = self.paused_since {
+            // Ako je prompt prije pauze preskočen, taj period nije susjedan onome što
+            // slijedi (pauza je između) — nosi se dalje kao zasebni red.
+            self.carry(PromptSpan { start: self.last_covered, end: since });
             if now > since {
                 let start = since.max(self.last_covered);
                 self.entries.push(Entry::new(start, now, "Pauza", EntryKind::Pause));
@@ -605,7 +764,23 @@ impl TrackerEngine {
 
     // MARK: - Prompt
 
-    fn show_prompt(&mut self, request: PromptRequest) {
+    fn show_prompt(&mut self, mut request: PromptRequest) {
+        // Preskočeni periodi idu uz svaki prompt. Oni susjedni glavnom periodu stope se u
+        // njega (jedan period koji se može razbiti s `✂`), ostali se prikazuju kao zasebni
+        // redovi iznad.
+        let mut carried = self.carried_spans.clone();
+        while carried
+            .last()
+            .is_some_and(|last| (request.start - last.end).num_seconds().abs() <= 1)
+        {
+            let last = carried.pop().expect("provjereno iznad");
+            request.start = last.start;
+            // Prompt bez vlastitog perioda (samo preskočeni redovi) preuzima kraj spojenog
+            // perioda — inače bi ostao degeneriran i to vrijeme bi se izgubilo.
+            request.end = Some(request.end.unwrap_or(last.end).max(last.end));
+        }
+        request.carried = carried;
+
         if self.settings.sound_enabled {
             self.effects.push(Effect::PlaySound);
         }
@@ -638,35 +813,89 @@ impl TrackerEngine {
         self.snooze(5);
     }
 
-    pub fn on_prompt_submitted(&mut self, request: &PromptRequest, segments: Vec<PromptSegment>) {
+    /// Dodaje preskočeni period u popis koji se nosi u sljedeći prompt; susjedni se stapaju.
+    fn carry(&mut self, span: PromptSpan) {
+        if span.duration() <= 60.0 {
+            return;
+        }
+        match self.carried_spans.last_mut() {
+            Some(last) if (span.start - last.end).num_seconds().abs() <= 1 => {
+                last.end = last.end.max(span.end);
+            }
+            _ => self.carried_spans.push(span),
+        }
+    }
+
+    /// Segment bez teksta je **preskočen** — ne bilježi se. Ako je na kraju perioda,
+    /// `last_covered` ostaje gdje je bio, pa isti period iskoči u sljedećem promptu (produžen
+    /// za novi interval). Preskočeni period nakon kojeg ima zabilježenog vremena nosi se dalje
+    /// kao zasebni red.
+    pub fn on_prompt_submitted(&mut self, request: &PromptRequest, result: PromptResult) {
         self.prompt_visible = false;
         let now = Local::now();
         // Produženi kraj (ako je prompt čekao preko granica) ima prednost nad izvornim.
         let effective_end = self.active_prompt_end.or(request.end);
         self.active_prompt_end = None;
-        let mut covered_end = request.start;
-        for seg in segments {
+        // Svi prikazani preskočeni periodi vratili su se u odgovoru — popis se gradi ispočetka.
+        self.carried_spans.clear();
+
+        let mut segments = result.segments;
+        segments.sort_by_key(|s| s.start);
+        let texts: Vec<String> = segments.iter().map(|s| s.text.trim().to_string()).collect();
+
+        // Niz praznih segmenata na kraju glavnog perioda samo "otkriva" vrijeme unatrag.
+        let mut covered_end = effective_end
+            .or_else(|| segments.last().map(|s| s.end))
+            .unwrap_or(request.start);
+        let mut last_filled = segments.len() as i64 - 1;
+        while last_filled >= 0
+            && texts[last_filled as usize].is_empty()
+            && segments[last_filled as usize].start >= request.start
+        {
+            covered_end = segments[last_filled as usize].start;
+            last_filled -= 1;
+        }
+
+        for (i, seg) in segments.iter().enumerate() {
             if (seg.end - seg.start).num_seconds() <= 5 {
                 continue;
             }
-            self.entries.push(Entry::new(seg.start, seg.end, seg.text.clone(), EntryKind::Work));
-            // Kronološki redoslijed → zadnji segment završi kao history[0] (prefill za
-            // idući prompt).
-            self.push_history(&seg.text);
-            covered_end = covered_end.max(seg.end);
+            if texts[i].is_empty() {
+                if (i as i64) <= last_filled {
+                    self.carry(PromptSpan { start: seg.start, end: seg.end });
+                }
+            } else {
+                self.entries.push(Entry::new(seg.start, seg.end, texts[i].clone(), EntryKind::Work));
+                // Kronološki redoslijed → zadnji segment završi kao history[0] (prefill za
+                // idući prompt).
+                self.push_history(&texts[i]);
+            }
         }
+        // "Nastavljam s" iz ručnog prompta se ne bilježi kao unos, nego ide samo u povijest —
+        // time postaje pre-fill sljedećeg prompta.
+        if let Some(next_up) = result.next_up.as_deref() {
+            self.push_history(next_up);
+        }
+
         match &request.pause_after {
             Some(pending) if now > pending.start => {
+                // Odsutnost se bilježi kao pauza; preskočeni rad prije nje nije susjedan onome
+                // što slijedi, pa se nosi dalje zasebno.
+                self.carry(PromptSpan {
+                    start: covered_end,
+                    end: pending.start.min(effective_end.unwrap_or(pending.start)),
+                });
                 self.entries.push(Entry::new(pending.start, now, pending.reason.clone(), EntryKind::Pause));
                 self.last_covered = self.last_covered.max(now);
             }
             _ => {
-                self.last_covered = self.last_covered.max(effective_end.unwrap_or(covered_end));
+                self.last_covered = self.last_covered.max(covered_end);
             }
         }
         self.persist_day();
 
         if request.is_final {
+            // Dan je zatvoren — nema sljedećeg prompta koji bi pitao za preskočene periode.
             self.finalize_stop();
         } else if self.pause_until.is_none() {
             let from = now.max(self.last_covered);

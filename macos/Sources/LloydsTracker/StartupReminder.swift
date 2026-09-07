@@ -58,7 +58,7 @@ final class StartupReminderController {
         let f = PromptController.promptScreen().visibleFrame
         panel.setFrameOrigin(NSPoint(x: f.maxX - size.width - 24, y: f.maxY - size.height - 24))
         panel.isReleasedWhenClosed = false
-        panel.makeKeyAndOrderFront(nil)
+        PanelFade.appear(panel)
         window = panel
         shownAt = Date()
         shownBackfillFrom = backfillFrom

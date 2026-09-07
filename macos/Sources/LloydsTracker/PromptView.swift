@@ -5,16 +5,23 @@ struct PromptView: View {
     @ObservedObject var model: PromptModel
     let style: PromptStyle
     let history: [String]
-    let onSubmit: ([PromptSegment]) -> Void
+    let onSubmit: (PromptResult) -> Void
     let onSnooze: () -> Void
     let onLayoutChange: () -> Void
 
-    /// Spojeni niz blokova s jednim opisom; identitet mu je vrijeme početka.
+    /// Jedan red prompta: blok (ili spojeni niz blokova) glavnog perioda, ili preskočeni
+    /// period iz prijašnjeg prompta. Identitet mu je vrijeme početka.
     private struct Segment: Identifiable {
         let start: Date
         let end: Date
+        /// Nije dio glavnog perioda — preskočen je i nosi se dalje.
+        var carried = false
         var id: Date { start }
     }
+
+    /// Ključ polja "nastavljam s" u `texts` — dijeli ga s opisima segmenata, pa listanje
+    /// povijesti (↑/↓) radi i tamo. Nikad se ne poklapa s pravim vremenom bloka.
+    private static let nextUpKey = Date.distantFuture
 
     private var periodStart: Date { model.start }
     /// Kraj perioda se uživo produžuje dok prompt čeka odgovor (skupno vrijeme).
@@ -34,7 +41,7 @@ struct PromptView: View {
         model: PromptModel,
         style: PromptStyle,
         history: [String],
-        onSubmit: @escaping ([PromptSegment]) -> Void,
+        onSubmit: @escaping (PromptResult) -> Void,
         onSnooze: @escaping () -> Void,
         onLayoutChange: @escaping () -> Void = {}
     ) {
@@ -45,12 +52,22 @@ struct PromptView: View {
         self.onSubmit = onSubmit
         self.onSnooze = onSnooze
         self.onLayoutChange = onLayoutChange
+        // Pre-fill dobiva samo glavni period; preskočeni redovi ostaju prazni jer su
+        // svjesno ostavljeni za kasnije — Enter ih ne smije napuniti zadnjim unosom.
         _texts = State(initialValue: [model.start: history.first ?? ""])
     }
 
-    private var prefill: String { history.first ?? "" }
+    /// Degeneriran glavni period (npr. ručni prompt odmah nakon odgovora, ili dan zatvoren
+    /// točno na granici) skriva se ako ima preskočenih redova — inače ostaje kao jedini red.
+    private var showsMainPeriod: Bool { periodEnd > periodStart || request.carried.isEmpty }
 
-    private var segments: [Segment] {
+    private var carriedSegments: [Segment] {
+        request.carried
+            .sorted { $0.start < $1.start }
+            .map { Segment(start: $0.start, end: $0.end, carried: true) }
+    }
+
+    private var mainSegments: [Segment] {
         var result: [Segment] = []
         var s = periodStart
         for p in boundaries where splitPoints.contains(p) {
@@ -59,6 +76,10 @@ struct PromptView: View {
         }
         result.append(Segment(start: s, end: periodEnd))
         return result
+    }
+
+    private var segments: [Segment] {
+        carriedSegments + (showsMainPeriod ? mainSegments : [])
     }
 
     private var timeRange: String {
@@ -120,7 +141,7 @@ struct PromptView: View {
                             RoundedRectangle(cornerRadius: 20, style: .continuous)
                                 .stroke(Color.lloydsYellow.opacity(0.3), lineWidth: 1)
                         )
-                    Text("Odgovor je obavezan — upiši što radiš i stisni Enter.")
+                    Text("Upiši što radiš i stisni ⏎ — ili preskoči (esc), pa te period čeka u sljedećem promptu.")
                         .font(.system(size: 12))
                         .foregroundStyle(Color.lloydsGray.opacity(0.7))
                 }
@@ -138,73 +159,118 @@ struct PromptView: View {
                     .tracking(1.5)
                     .foregroundStyle(.white)
                 Spacer()
-                Text(timeRange)
-                    .font(.system(size: big ? 13 : 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.lloydsGray)
+                // Uz preskočene redove period piše na svojoj sekciji, da se ne čita kao
+                // da vrijedi za cijeli prompt.
+                if showsMainPeriod, carriedSegments.isEmpty {
+                    Text(timeRange)
+                        .font(.system(size: big ? 13 : 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.lloydsGray)
+                }
             }
 
             if let note = request.note {
                 Text(note)
                     .font(.system(size: big ? 13 : 11))
                     .foregroundStyle(Color.lloydsYellow.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !boundaries.isEmpty {
-                blockBar
+            // Preskočeni periodi iz prijašnjih promptova su svoja skupina, iznad crte —
+            // traka blokova (`✂`) i pre-fill vrijede samo za glavni period pod njom.
+            if !carriedSegments.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionLabel("PRESKOČENO PRIJE — POPUNI ILI OSTAVI ZA KASNIJE")
+                    ForEach(carriedSegments) { seg in
+                        segmentRow(seg, big: big, single: false)
+                    }
+                }
+                Divider().overlay(Color.white.opacity(0.12))
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(segments) { seg in
-                    segmentRow(seg, big: big, single: segments.count == 1)
+            if showsMainPeriod {
+                if !carriedSegments.isEmpty {
+                    sectionLabel("PERIOD \(Fmt.hhmm(periodStart))–\(Fmt.hhmm(periodEnd))")
+                }
+                if !boundaries.isEmpty {
+                    blockBar
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    // Nerazbijen period nosi vrijeme u naslovu (ili na sekciji), pa se u
+                    // redu ne ponavlja.
+                    ForEach(mainSegments) { seg in
+                        segmentRow(seg, big: big, single: mainSegments.count == 1)
+                    }
                 }
             }
 
-            HStack(spacing: 14) {
-                hint("↑↓", "povijest")
-                hint("⏎", "spremi")
-                if segments.count == 1 {
-                    if style == .floating && !prefill.isEmpty {
-                        hint("esc", "isto kao zadnje")
-                    }
-                    if !boundaries.isEmpty {
+            if request.isManual {
+                nextUpField(big: big)
+            }
+
+            // Dva reda: gore tipkovnica, dolje akcije. U jednom redu se na 420 px
+            // natpisi lome u dva reda.
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    hint("↑↓", "povijest")
+                    hint("⏎", "spremi")
+                    hint("esc", "preskoči")
+                    if mainSegments.count == 1, showsMainPeriod, !boundaries.isEmpty {
                         hint("✂", "razbij period")
                     }
+                    Spacer(minLength: 0)
                 }
-                Spacer()
-                if request.allowSnooze {
-                    Button("Odgodi 5 min", action: onSnooze)
-                        .buttonStyle(.plain)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color.lloydsGray)
-                        .underline()
+                HStack(spacing: 10) {
+                    Spacer(minLength: 0)
+                    if request.allowSnooze {
+                        Button("Odgodi 5 min", action: onSnooze)
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color.lloydsGray)
+                            .underline()
+                    }
+                    Button(action: skip) {
+                        Text("Preskoči")
+                            .font(.system(size: 11, weight: .semibold))
+                            .fixedSize()
+                            .foregroundStyle(Color.lloydsGray)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Ne bilježi ništa — period se vraća u sljedeći prompt")
                 }
             }
         }
         .padding(big ? 28 : 18)
         .frame(width: width)
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                focusedField = periodStart
+            // Fokus čeka isto koliko i prozor prije nego uzme tipkovnicu — pop-up koji
+            // iskoči dok tipkaš u drugoj aplikaciji ne smije presresti ostatak rečenice.
+            DispatchQueue.main.asyncAfter(deadline: .now() + PanelFade.keyDelay + 0.05) {
+                focusedField = segments.first?.start
             }
         }
-        .onExitCommand {
-            _ = handleEscape()
-        }
+        .onExitCommand(perform: skip)
     }
 
     // MARK: - Traka blokova
 
     private var blockBar: some View {
         let total = max(periodEnd.timeIntervalSince(periodStart), 1)
+        let blocks = mainSegments
         return VStack(alignment: .leading, spacing: 3) {
             GeometryReader { geo in
                 let w = geo.size.width
                 ZStack(alignment: .topLeading) {
-                    ForEach(segments) { seg in
+                    ForEach(blocks) { seg in
                         let x = CGFloat(seg.start.timeIntervalSince(periodStart) / total) * w
                         let sw = CGFloat(seg.end.timeIntervalSince(seg.start) / total) * w
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.lloydsYellow.opacity(focusedField == seg.start || segments.count == 1 ? 0.85 : 0.4))
+                            .fill(Color.lloydsYellow.opacity(focusedField == seg.start || blocks.count == 1 ? 0.85 : 0.4))
                             .frame(width: max(6, sw - 4), height: 20)
                             .offset(x: x + 2)
                             .onTapGesture { focusedField = seg.start }
@@ -259,7 +325,7 @@ struct PromptView: View {
     private func toggleSplit(_ b: Date) {
         if splitPoints.contains(b) {
             splitPoints.remove(b)
-            focusedField = segments.last(where: { $0.start <= b })?.start ?? periodStart
+            focusedField = mainSegments.last(where: { $0.start <= b })?.start ?? periodStart
         } else {
             splitPoints.insert(b)
             if texts[b] == nil { texts[b] = "" }
@@ -273,12 +339,20 @@ struct PromptView: View {
     private func segmentRow(_ seg: Segment, big: Bool, single: Bool) -> some View {
         HStack(spacing: 8) {
             if !single {
-                Text("\(Fmt.hhmm(seg.start))–\(Fmt.hhmm(seg.end))")
-                    .font(.system(size: big ? 12 : 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(focusedField == seg.start ? Color.lloydsYellow : Color.lloydsGray)
-                    .frame(width: big ? 96 : 80, alignment: .leading)
+                HStack(spacing: 3) {
+                    if seg.carried {
+                        Image(systemName: "arrow.uturn.left")
+                            .font(.system(size: big ? 9 : 8, weight: .bold))
+                    }
+                    Text("\(Fmt.hhmm(seg.start))–\(Fmt.hhmm(seg.end))")
+                        .font(.system(size: big ? 12 : 10, weight: .semibold, design: .monospaced))
+                }
+                .foregroundStyle(rowTint(seg))
+                .frame(width: big ? 96 : 84, alignment: .leading)
+                .help(seg.carried ? "Preskočeni period iz prijašnjeg prompta" : "")
             }
-            TextField("npr. Projekt X — opis zadatka", text: binding(for: seg.start))
+            TextField(seg.carried ? "preskočeno — upiši ili ostavi prazno" : "npr. Projekt X — opis zadatka",
+                      text: binding(for: seg.start))
                 .textFieldStyle(.plain)
                 .font(.system(size: big ? 17 : 14))
                 .foregroundStyle(.white)
@@ -286,7 +360,7 @@ struct PromptView: View {
                 .padding(big ? 14 : 10)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.07))
+                        .fill(Color.white.opacity(seg.carried ? 0.04 : 0.07))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -296,7 +370,49 @@ struct PromptView: View {
                 .onSubmit(submit)
                 .onKeyPress(.upArrow) { cycleHistory(older: true); return .handled }
                 .onKeyPress(.downArrow) { cycleHistory(older: false); return .handled }
-                .onKeyPress(.escape) { handleEscape() }
+                .onKeyPress(.escape) { skip(); return .handled }
+        }
+    }
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 9, weight: .heavy))
+            .tracking(1.2)
+            .foregroundStyle(Color.lloydsGray.opacity(0.6))
+    }
+
+    private func rowTint(_ seg: Segment) -> Color {
+        if focusedField == seg.start { return Color.lloydsYellow }
+        return seg.carried ? Color.lloydsGray.opacity(0.55) : Color.lloydsGray
+    }
+
+    /// Ručni prompt: čime korisnik nastavlja. Ne bilježi se kao unos — samo pre-fillava
+    /// sljedeći prompt, pa se prebacivanje na drugi projekt zapiše u jednom koraku.
+    private func nextUpField(big: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionLabel("NASTAVLJAM S — NIJE OBAVEZNO")
+            TextField("npr. Projekt B — hitni fix", text: binding(for: Self.nextUpKey))
+                .textFieldStyle(.plain)
+                .font(.system(size: big ? 15 : 13))
+                .foregroundStyle(.white)
+                .tint(Color.lloydsYellow)
+                .padding(big ? 12 : 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.lloydsYellow.opacity(focusedField == Self.nextUpKey ? 0.8 : 0.18), lineWidth: 1)
+                )
+                .focused($focusedField, equals: Self.nextUpKey)
+                .onSubmit(submit)
+                .onKeyPress(.upArrow) { cycleHistory(older: true); return .handled }
+                .onKeyPress(.downArrow) { cycleHistory(older: false); return .handled }
+                .onKeyPress(.escape) { skip(); return .handled }
+            Text("Sljedeći prompt kreće s ovim opisom.")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.lloydsGray.opacity(0.5))
         }
     }
 
@@ -317,31 +433,31 @@ struct PromptView: View {
             Text(label)
                 .font(.system(size: 10))
         }
+        .fixedSize()
         .foregroundStyle(Color.lloydsGray)
     }
 
     // MARK: - Akcije
 
+    /// Odgovor nije obavezan: segmenti bez teksta su preskočeni i engine ih vraća u
+    /// sljedeći prompt.
     private func submit() {
-        var out: [PromptSegment] = []
-        for seg in segments {
-            let t = (texts[seg.start] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else {
-                focusedField = seg.start
-                return
-            }
-            out.append(PromptSegment(start: seg.start, end: seg.end, text: t))
-        }
-        guard !out.isEmpty else { return }
-        onSubmit(out)
+        onSubmit(result(skipAll: false))
     }
 
-    private func handleEscape() -> KeyPress.Result {
-        if style == .floating, segments.count == 1, !prefill.isEmpty {
-            onSubmit([PromptSegment(start: periodStart, end: periodEnd, text: prefill)])
-            return .handled
-        }
-        return .handled // fullscreen ili razdvojeno: esc ne radi ništa
+    private func skip() {
+        onSubmit(result(skipAll: true))
+    }
+
+    private func result(skipAll: Bool) -> PromptResult {
+        PromptResult(
+            segments: segments.map {
+                PromptSegment(start: $0.start, end: $0.end, text: skipAll ? "" : (texts[$0.start] ?? ""))
+            },
+            // "Nastavljam s" vrijedi i kad se period preskoči — prebacivanje na drugi
+            // projekt je jedini razlog zašto je to polje tamo.
+            nextUp: request.isManual ? texts[Self.nextUpKey] : nil
+        )
     }
 
     private func cycleHistory(older: Bool) {

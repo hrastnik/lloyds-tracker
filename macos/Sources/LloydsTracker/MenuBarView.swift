@@ -77,6 +77,35 @@ struct MenuBarView: View {
                 .foregroundStyle(Color.lloydsGray.opacity(0.7))
             }
 
+            if engine.canPromptNow {
+                Button {
+                    // MenuBarExtra (.window) se ne zatvara sam kad se klikne gumb — bez
+                    // ovoga bi prompt iskočio ispod otvorenog popovera.
+                    dismissMenu()
+                    engine.manualPrompt()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Zapiši sada")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(Color.lloydsYellow)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.lloydsYellow.opacity(0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.lloydsYellow.opacity(0.5), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Zapiši period do sada i (ako želiš) reci čime nastavljaš")
+            }
+
             if engine.isTracking {
                 HStack(spacing: 8) {
                     if engine.pauseUntil == nil {
@@ -130,6 +159,15 @@ struct MenuBarView: View {
     }
 
     private let stopRed = Color(red: 1.0, green: 0.36, blue: 0.31)
+
+    /// Zatvara popover iz status bara. MenuBarExtra u `.window` stilu nema dismiss API,
+    /// a popover je key window — pa ga zatvaramo izravno. Naslovnu traku imaju samo
+    /// "pravi" prozori (Pregled dana, Postavke), koje ne smijemo dirati.
+    private func dismissMenu() {
+        if let w = NSApp.keyWindow, !w.styleMask.contains(.titled) {
+            w.orderOut(nil)
+        }
+    }
 
     /// Vidljivi "pill" gumb za crnu pozadinu — default macOS button style se ovdje
     /// renderira kao prazna crna ploha, pa gumbe stiliziramo ručno.

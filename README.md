@@ -2,11 +2,16 @@
 
 Aplikacija za praćenje vremena na poslu u Lloyds Digital vizualnom stilu
 (crna `#070707` + žuta `#FBDE07`). Sjedi u traci (menu bar / system tray) i u
-zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se spremaju
+zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovor nije obavezan —
+prompt se može **preskočiti**, pa taj period čeka u sljedećem promptu; a *Zapiši sada*
+otvara prompt ručno, kad god treba. Odgovori se spremaju
 lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
-exportati u CSV (kronološki pregled može spojiti susjedne unose istog naziva u jedan). Ako
+exportati u CSV (kronološki pregled može spojiti susjedne unose istog naziva u jedan, a
+svaki se unos može i ispraviti). Ako
 zaboraviš isključiti, tracking se **sam zaustavlja** u zadano vrijeme (default 16:00) —
-minutu prije iskoči upozorenje s opcijom produženja samo za taj dan.
+minutu prije iskoči upozorenje s opcijom produženja samo za taj dan. Prompt koji je
+prenoćio (laptop zatvoren bez odgovora) ne razvuče period u novi dan — odreže se na to
+vrijeme zaustavljanja.
 
 Ujutro te sam podsjeti: u zadano vrijeme početka radnog dana (default **8:30**) iskoči
 pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvoriš tek u 9:30,

@@ -112,7 +112,7 @@ impl StartupReminder {
         window.add_controller(key);
 
         window.set_child(Some(&content));
-        window.present();
+        ui::PanelFade::appear(&window);
         Rc::new(StartupReminder { window })
     }
 

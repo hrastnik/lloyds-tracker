@@ -133,7 +133,7 @@ impl AutoStopWarning {
         window.add_controller(key);
 
         window.set_child(Some(&content));
-        window.present();
+        ui::PanelFade::appear(&window);
 
         // Odbrojavanje se osvježava 4×/s (kao macOS TimelineView) i sam se ugasi kad
         // prozor nestane, pa ne drži referencu na zatvoreni prozor.

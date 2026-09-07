@@ -4,9 +4,10 @@ Nativni Linux tray port macOS menu bar aplikacije za praćenje vremena, u Lloyds
 vizualnom stilu (crna `#070707` + žuta `#FBDE07`). Ista funkcionalnost, isti JSON format
 podataka kao macOS i Windows verzija.
 
-Sjedi u traci i u zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se
-spremaju lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
-exportati u CSV.
+Sjedi u traci i u zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovor
+**nije obavezan** — prompt se može preskočiti, pa taj period čeka u sljedećem promptu.
+Odgovori se spremaju lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš
+kopirati ili exportati u CSV.
 
 ## Tehnologija
 
@@ -60,17 +61,48 @@ Isto kao macOS i Windows verzija:
 2. Svakih 15 min iskoči prompt, pre-fillan zadnjim unosom:
    - `Enter` — spremi
    - `↑` / `↓` — listanje povijesti
-   - `Esc` — spremi isto kao zadnji put (samo floating stil)
+   - `Esc` / *Preskoči* — ne bilježi ništa, period se vraća u sljedeći prompt
    - `✂` na traci blokova — razbij period na više unosa
    - *Odgodi 5 min* — snooze (samo floating stil)
-3. **Pauziraj** (15/30/60 min ili do nastavka) — vrijeme se bilježi kao pauza.
-4. **Završi dan** → pregled dana (grupirano/kronološki), *Kopiraj pregled* ili *Export CSV*.
+3. **Zapiši sada** — ručni prompt kad god treba (npr. kod prebacivanja na drugi projekt).
+4. **Pauziraj** (15/30/60 min ili do nastavka) — vrijeme se bilježi kao pauza.
+5. **Završi dan** → pregled dana (grupirano/kronološki), *Kopiraj pregled* ili *Export CSV*.
+
+Pop-upi se pojavljuju **s fade-inom**, a tipkovnicu preuzimaju ~0.9 s nakon toga — prompt koji
+iskoči dok pišeš u drugoj aplikaciji tako ne presretne ostatak rečenice (ni ne pregazi
+pre-fill). Do tada prozor tipke **odbacuje** (v. [Što je namjerno drukčije](#što-je-namjerno-drukčije)).
 
 Meni u traci prikazuje status, sljedeći prompt (**vrijeme**, npr. `Sljedeći prompt u 10:15`,
 a ne živo odbrojavanje kao macOS popover — meni crta host preko DBus-a, pa bi sekundno
 osvježavanje bilo promet bez koristi), ukupno vrijeme i zadnjih 8 unosa.
 
+### Preskakanje prompta
+
+Odgovor nije obavezan. *Preskoči* (ili `Esc`) ne bilježi ništa i **period se ne troši** — sam
+iskoči u sljedećem promptu, produžen za novi interval: preskočiš 10:00–10:15, a u 10:30 te
+prompt pita za 10:00–10:30 (i to se može razbiti na više unosa s `✂`). Isto vrijedi i za
+pojedini blok razbijenog perioda — ostavi ga praznog i vratit će se.
+
+Ako između preskočenog perioda i sljedećeg stane pauza (period nije više susjedan), preskočeno
+se nosi kao **zasebni red** iznad crte (`↩ 09:45–10:15`) — popuni ga kad znaš ili ostavi dalje.
+Zadnji prompt dana nosi i te redove; ono što se tamo preskoči više se ne bilježi.
+
+### Ručni prompt — "Zapiši sada"
+
+U meniju u traci, dok je tracking aktivan. Zapisuje period **od zadnjeg zapisa do sada**, bez
+čekanja na interval — za trenutak kad usred projekta A uskoči hitan zadatak na projektu B.
+
+Uz opis perioda ima i polje **„Nastavljam s”** (nije obavezno): taj tekst se ne bilježi kao
+unos, nego postaje **pre-fill sljedećeg prompta** — pa te redovni prompt u zakazano vrijeme
+pita za ostatak intervala već s opisom projekta B. Ritam promptanja se ne mijenja: sljedeći
+prompt iskoči u svoje vrijeme (10:15, 10:30…) kao i inače.
+
 ### Pregled dana
+
+Svaki red u tabu **Kronološki** ima `✎` — **Ispravi unos**: opis (uz padajući izbor iz
+povijesti), vrijeme *od*/*do* i vrsta (rad/pauza). Radi i za prijašnje dane. Kod spojenog reda
+(`2×`) promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan
+unos** — novi raspon nema stare granice blokova (prozor na to i upozori).
 
 U tabu **Kronološki** opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -126,6 +158,18 @@ Zaustavljanje u toj zadnjoj minuti bilježi zadnji period **do zakazanog vremena
 uvijek završi na 16:00, a ne na 15:59. Ako se ne reagira, dan se zatvara sam: zadnji period
 završava u zakazano vrijeme, pa unosi ostaju ispravni i kad se odgovori sljedeći dan.
 
+#### Prompt koji je prenoćio
+
+Zatvoriš laptop bez odgovora na prompt i otvoriš ga **sutra**: dan se ne nastavlja od jučer.
+Čim se app probudi, period se **odreže na zadano vrijeme zaustavljanja** i dan se zatvara, pa
+zadnji prompt pita za taj skraćeni period (i to piše u njemu) — a odgovor završi kod jučerašnjeg
+datuma, s ispravnim vremenima. Produženja iz upozorenja (+15 / +30 / +45 / +1 h) se poštuju:
+rez je na produženom vremenu.
+
+Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se koristi vrijeme iz
+te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
+ponoć.
+
 ## Postavke
 
 Traka → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -133,7 +177,7 @@ Traka → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Postavka | Default |
 |---|---|
 | Interval promptanja | 15 min (5–60) |
-| Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
+| Stil prompta | Floating panel / Cijeli ekran (preko svega) |
 | Zvuk kod prompta | uključen |
 | Podsjetnik na početak radnog dana + vrijeme | uključeno, 8:30 |
 | Ponudi i nadoknadu od tog vremena | uključeno |
@@ -174,7 +218,8 @@ linux/src/
 ├── tray.rs             # ksni Tray: meni, snapshot, naredbe prema aplikaciji
 ├── icon.rs             # cairo brand pločica: ikone u traci po stanju
 ├── prompt.rs           # floating panel / fullscreen prompt + traka blokova
-├── summary.rs          # pregled dana, copy/CSV export, brisanje
+├── summary.rs          # pregled dana, copy/CSV export, ispravak/brisanje
+├── entry_edit.rs       # prozor za ispravak unosa (Pregled dana → Kronološki)
 ├── settings_window.rs  # postavke (3 taba)
 ├── startup_reminder.rs # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── auto_stop.rs        # upozorenje 1 min prije auto-stopa + produženja
@@ -184,7 +229,7 @@ linux/src/
 ├── sound.rs            # canberra-gtk-play / paplay / pw-play / aplay
 ├── store.rs            # JSON pohrana (atomski zapis)
 ├── models.rs           # Entry, AppSettings, PromptRequest, grupiranje
-├── ui.rs               # graditelji widgeta (label, button, hbox…)
+├── ui.rs               # graditelji widgeta (label, button, hbox…) + PanelFade
 └── theme.rs            # Lloyds boje, hr formatiranje, CSS
 ```
 
@@ -203,6 +248,10 @@ linux/src/
 | `NSSound("Glass")` | `canberra-gtk-play -i message` (+ fallbackovi) |
 | `NSPasteboard` | `gtk::Widget::clipboard()` |
 | `NSSavePanel` | `gtk::FileDialog` |
+| `PanelFade` (`NSAnimationContext` + odgođeni `makeKey`) | `ui::PanelFade` (`set_opacity` u `glib::timeout` + odgođeno hvatanje tipki) |
+| `.sheet` (ispravak unosa) | modalni `gtk::Window` (`transient_for`) |
+| SwiftUI `DatePicker(.hourAndMinute)` | dva `SpinButton`-a (sat + minuta) |
+| `.help(…)` tooltip | `set_tooltip_text` |
 
 ### Što je namjerno drukčije
 
@@ -212,5 +261,11 @@ linux/src/
   preporučen na Linuxu.
 - **Meni u traci** je host-renderiran (DBus), pa nema živog odbrojavanja ni brand stila —
   prikazuje vrijeme sljedećeg prompta i zadnjih 8 unosa kao neaktivne stavke.
+- **Odgoda tipkovnice.** Da pop-up ne presretne rečenicu koju pišeš u drugoj aplikaciji,
+  macOS prozor tek nakon ~0.9 s postane *key* — do tada tipke normalno idu prethodnoj
+  aplikaciji. GTK4 nema pandan `makeKey`-u i ne može vratiti fokus onome od koga ga je
+  compositor uzeo, pa Linux port tipke u tom međuvremenu **odbacuje** (hvata ih u capture
+  fazi) i tek onda fokusira polje. Efekt je isti tamo gdje je važan — ništa ne završi u
+  promptu — ali te tipke su izgubljene, a ne isporučene prethodnoj aplikaciji.
 - **Cmd+Tab pandan** ne postoji: aplikacija je tray-only i prozori se pojave u pregledu
   prozora samo dok su otvoreni.

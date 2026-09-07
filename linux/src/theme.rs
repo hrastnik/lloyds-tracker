@@ -97,7 +97,11 @@ label {{ color: #ffffff; }}
 .muted {{ color: {gray}; font-size: 11px; }}
 .muted-dim {{ color: alpha({gray}, 0.7); font-size: 10px; }}
 .mono {{ font-family: monospace; }}
+.muted-faint {{ color: alpha({gray}, 0.55); font-size: 10px; font-weight: 600; }}
+.footnote {{ color: alpha({gray}, 0.5); font-size: 10px; }}
 .accent {{ color: {yellow}; }}
+/* Upozorenje u ispravku unosa (macOS `Color.orange`). */
+.warn {{ color: #ffa500; }}
 .heading {{ font-weight: 900; font-size: 13px; letter-spacing: 2px; }}
 .heading-light {{ font-weight: 300; font-size: 13px; letter-spacing: 2px; color: {gray}; }}
 .big-title {{ font-weight: 900; font-size: 20px; }}
@@ -117,6 +121,7 @@ button.yellow {{
     border: none; border-radius: 8px; padding: 8px 14px;
 }}
 button.yellow:hover {{ background: shade({yellow}, 1.08); }}
+button.yellow:disabled {{ background: alpha({yellow}, 0.35); }}
 button.outline {{
     background: transparent; background-image: none;
     color: {gray};
@@ -139,6 +144,12 @@ button.link {{
     text-decoration: underline;
 }}
 button.link:hover {{ color: {yellow}; }}
+button.skip {{
+    background: transparent; background-image: none;
+    color: {gray}; font-size: 11px; font-weight: 600;
+    border: 1px solid alpha(#ffffff, 0.22); border-radius: 6px; padding: 5px 12px;
+}}
+button.skip:hover {{ background: alpha(#ffffff, 0.06); }}
 button.split {{
     background: {black}; background-image: none;
     color: {gray};
@@ -154,8 +165,16 @@ entry.brand {{
     border: 1px solid alpha({yellow}, 0.25); border-radius: 10px;
     padding: 10px; font-size: 14px;
 }}
-entry.brand:focus {{ border-color: alpha({yellow}, 0.8); }}
 entry.brand.big {{ font-size: 17px; padding: 14px; }}
+/* Preskočeni period iz prijašnjeg prompta — blijeđa podloga od glavnog. */
+entry.brand.carried {{ background: alpha(#ffffff, 0.04); }}
+/* Polje `nastavljam s` u ručnom promptu — nije obavezno, pa je i vizualno tiše. */
+entry.brand.next-up {{
+    background: alpha(#ffffff, 0.05); border-color: alpha({yellow}, 0.18);
+    font-size: 13px; padding: 9px;
+}}
+entry.brand.next-up.big {{ font-size: 15px; padding: 12px; }}
+entry.brand:focus {{ border-color: alpha({yellow}, 0.8); }}
 
 .kbd {{
     background: alpha(#ffffff, 0.12); border-radius: 4px;

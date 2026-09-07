@@ -342,34 +342,7 @@ internal sealed class SettingsForm : Form
     }
 
     private static ComboBox DarkCombo(string[] items, int selectedIndex, Point location, int width, AnchorStyles anchor)
-    {
-        var combo = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Palette.White.OverBlack(0.1),
-            ForeColor = Palette.White,
-            Font = Brand.Ui(9.5f),
-            DrawMode = DrawMode.OwnerDrawFixed,
-            Location = location,
-            Width = width,
-            Anchor = anchor,
-        };
-        combo.Items.AddRange(items.Cast<object>().ToArray());
-        combo.DrawItem += DarkComboDrawItem;
-        if (selectedIndex >= 0 && selectedIndex < items.Length) combo.SelectedIndex = selectedIndex;
-        return combo;
-    }
-
-    private static void DarkComboDrawItem(object? sender, DrawItemEventArgs e)
-    {
-        if (sender is not ComboBox combo || e.Index < 0) return;
-        bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-        using var back = new SolidBrush(selected ? Palette.Yellow.With(0.25) : Palette.White.OverBlack(0.1));
-        e.Graphics.FillRectangle(back, e.Bounds);
-        TextRenderer.DrawText(e.Graphics, combo.Items[e.Index]?.ToString() ?? "", combo.Font, e.Bounds, Palette.White,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-    }
+        => Dark.Combo(items, selectedIndex, location, width, anchor);
 
     private CheckBox Toggle(string text, bool value, Action<bool> onChange)
     {

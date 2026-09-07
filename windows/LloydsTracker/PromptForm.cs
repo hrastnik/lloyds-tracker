@@ -17,25 +17,34 @@ internal sealed class PromptController
         PromptRequest request,
         PromptStyle style,
         IReadOnlyList<string> history,
-        Action<IReadOnlyList<PromptSegment>> onSubmit,
+        Action<PromptResult> onSubmit,
         Action onSnooze)
     {
         if (IsVisible) return;
 
         var form = new PromptForm(
             request, style, history,
-            onSubmit: segments => { Close(); onSubmit(segments); },
+            onSubmit: result => { Close(); onSubmit(result); },
             onSnooze: () => { Close(); onSnooze(); });
         _form = form;
         form.FormClosed += (_, _) => { if (_form == form) _form = null; };
-        form.Show();
-        form.Activate();
+        form.Appear();
     }
 
     /// <summary>Produži vidljivi prompt do nove granice (skupno vrijeme).</summary>
     public void Extend(DateTime end)
     {
         if (_form is { IsDisposed: false } f) f.Extend(end);
+    }
+
+    /// <summary>Vraća već otvoreni prompt u prvi plan — "Zapiši sada" dok prompt visi.</summary>
+    public void Focus()
+    {
+        if (_form is { IsDisposed: false } f)
+        {
+            f.Activate();
+            f.FocusInitialField();
+        }
     }
 
     public void Close()
@@ -64,10 +73,11 @@ internal sealed class PromptTextField : Control
     public event Action? HistoryNewer;
     public event Action? EscapeRequested;
     public event Action<PromptTextField>? FocusChanged;
+    public event Action? ValueChanged;
 
     private bool _focused;
 
-    public PromptTextField(DateTime key, bool big, Color fieldFill)
+    public PromptTextField(DateTime key, bool big, Color fieldFill, string placeholder = "")
     {
         Key = key;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
@@ -84,9 +94,11 @@ internal sealed class PromptTextField : Control
             Font = Brand.Ui(big ? 15f : 12f),
             ForeColor = Palette.White,
             BackColor = fieldFill,
+            PlaceholderText = placeholder,
         };
         _box.GotFocus += (_, _) => { _focused = true; Invalidate(); FocusChanged?.Invoke(this); };
         _box.LostFocus += (_, _) => { _focused = false; Invalidate(); };
+        _box.TextChanged += (_, _) => ValueChanged?.Invoke();
         _box.KeyDown += OnBoxKeyDown;
         Controls.Add(_box);
 
@@ -157,10 +169,13 @@ internal sealed class PromptTextField : Control
 internal sealed class PromptForm : Form
 {
     private readonly PromptRequest _request;
-    private readonly PromptStyle _style;
     private readonly IReadOnlyList<string> _history;
-    private readonly Action<IReadOnlyList<PromptSegment>> _onSubmit;
+    private readonly Action<PromptResult> _onSubmit;
     private readonly Action _onSnooze;
+
+    /// <summary>Ključ polja "nastavljam s" u <c>_texts</c> — dijeli ga s opisima segmenata, pa
+    /// listanje povijesti (↑/↓) radi i tamo. Nikad se ne poklapa s pravim vremenom bloka.</summary>
+    private static readonly DateTime NextUpKey = DateTime.MaxValue;
 
     private readonly DateTime _periodStart;
     /// <summary>Kraj perioda se uživo produžuje dok prompt čeka odgovor (skupno vrijeme).</summary>
@@ -176,31 +191,47 @@ internal sealed class PromptForm : Form
     private readonly int _innerW;
     private readonly Color _interior;
     private readonly Color _fieldFill;
+    private readonly Color _carriedFill;
 
     private FlowLayoutPanel _stack = null!;
+    private FlowLayoutPanel _mainPanel = null!;
     private FlowLayoutPanel _segmentsPanel = null!;
     private Panel _hintsPanel = null!;
+    private Panel _actionsPanel = null!;
     private BlockBarControl? _blockBar;
     private Label? _timeLabel;
+    private TrackedLabel? _periodSectionLabel;
+    private PromptTextField? _nextUpField;
     private CardPanel? _cardPanel;    // fullscreen only
     private Panel? _logoRow;          // fullscreen only
     private Label? _fullscreenHint;   // fullscreen only
     private readonly List<PromptTextField> _fields = new();
+    private readonly List<PromptTextField> _carriedFields = new();
 
     private int _floatRight;
     private int _floatTop;
 
     private string Prefill => _history.Count > 0 ? _history[0] : "";
 
+    /// <summary>Preskočeni periodi iz prijašnjih promptova — svoja skupina, iznad crte.</summary>
+    private IReadOnlyList<PromptSpan> Carried => _request.Carried;
+
+    /// <summary>Degeneriran glavni period (npr. ručni prompt odmah nakon odgovora, ili dan
+    /// zatvoren točno na granici) skriva se ako ima preskočenih redova — inače ostaje kao
+    /// jedini red.</summary>
+    private bool ShowsMainPeriod => _periodEnd > _periodStart || Carried.Count == 0;
+
+    /// <summary>Prompt se ne aktivira odmah — vidi <see cref="PanelFade"/>.</summary>
+    protected override bool ShowWithoutActivation => true;
+
     public PromptForm(
         PromptRequest request,
         PromptStyle style,
         IReadOnlyList<string> history,
-        Action<IReadOnlyList<PromptSegment>> onSubmit,
+        Action<PromptResult> onSubmit,
         Action onSnooze)
     {
         _request = request;
-        _style = style;
         _history = history;
         _onSubmit = onSubmit;
         _onSnooze = onSnooze;
@@ -208,6 +239,8 @@ internal sealed class PromptForm : Form
         _periodStart = request.Start;
         _periodEnd = Max(request.End ?? DateTime.Now, _periodStart);
         _boundaries = PromptGeometry.GridBoundaries(_periodStart, _periodEnd);
+        // Pre-fill dobiva samo glavni period; preskočeni redovi ostaju prazni jer su svjesno
+        // ostavljeni za kasnije — Enter ih ne smije napuniti zadnjim unosom.
         _texts[_periodStart] = Prefill;
 
         _big = style == PromptStyle.Fullscreen;
@@ -216,6 +249,7 @@ internal sealed class PromptForm : Form
         _innerW = cardWidth - _pad * 2;
         _interior = _big ? Palette.White.OverBlack(0.04) : Palette.Black;
         _fieldFill = Palette.White.OverBlack(0.07);
+        _carriedFill = Palette.White.OverBlack(0.04);
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -229,6 +263,19 @@ internal sealed class PromptForm : Form
 
         if (_big) BuildFullscreenChrome();
         else BuildFloatingChrome();
+    }
+
+    /// <summary>Fade-in na svoju poziciju; tipkovnicu preuzima (i polje fokusira) tek nakon
+    /// <see cref="PanelFade.KeyDelayMs"/>. Preko cijelog ekrana pomak ne treba — samo fade.</summary>
+    public void Appear()
+        => PanelFade.Appear(this, slide: _big ? 0 : 10, onKeyboard: FocusInitialField);
+
+    /// <summary>Fokus na prvi red prompta — preskočeni ako ih ima, inače glavni period.</summary>
+    public void FocusInitialField()
+    {
+        if (IsDisposed) return;
+        var first = _carriedFields.FirstOrDefault() ?? _fields.FirstOrDefault();
+        if (first != null) FocusFieldAt(first.Key);
     }
 
     // MARK: - Card content (shared)
@@ -251,36 +298,20 @@ internal sealed class PromptForm : Form
         if (!string.IsNullOrEmpty(_request.Note))
             AddRow(WrappedLabel(_request.Note!, Brand.Ui(_big ? 10.5f : 9f), Palette.Yellow.With(0.9), _interior, _innerW));
 
-        if (_boundaries.Count > 0)
-        {
-            _blockBar = new BlockBarControl
-            {
-                Width = _innerW,
-                PeriodStart = _periodStart,
-                PeriodEnd = _periodEnd,
-                Boundaries = _boundaries,
-                SplitPoints = _splitPoints,
-                BackColor = _interior,
-            };
-            _blockBar.SplitToggled += ToggleSplit;
-            _blockBar.SegmentFocused += FocusFieldAt;
-            AddRow(_blockBar);
-        }
+        if (Carried.Count > 0)
+            AddRow(BuildCarriedPanel());
 
-        _segmentsPanel = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            BackColor = _interior,
-            Margin = new Padding(0, Brand.S(14), 0, 0),
-            Width = _innerW,
-        };
-        AddRow(_segmentsPanel);
+        AddRow(BuildMainPanel());
 
+        if (_request.IsManual)
+            AddRow(BuildNextUpPanel());
+
+        // Dva reda: gore tipkovnica, dolje akcije. U jednom redu se na 420 px natpisi lome.
         _hintsPanel = new Panel { Width = _innerW, BackColor = _interior, Margin = new Padding(0, Brand.S(14), 0, 0) };
-        AddRow(_hintsPanel);
+        _stack.Controls.Add(_hintsPanel);
+        _actionsPanel = new Panel { Width = _innerW, BackColor = _interior, Margin = new Padding(0, Brand.S(10), 0, 0) };
+        _stack.Controls.Add(_actionsPanel);
+        BuildActions();
 
         RebuildSegmentsUI();
     }
@@ -334,6 +365,143 @@ internal sealed class PromptForm : Form
         return row;
     }
 
+    /// <summary>Preskočeni periodi iz prijašnjih promptova su svoja skupina, iznad crte —
+    /// traka blokova (`✂`) i pre-fill vrijede samo za glavni period pod njom.</summary>
+    private FlowLayoutPanel BuildCarriedPanel()
+    {
+        var panel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = _interior,
+            Width = _innerW,
+        };
+        panel.Controls.Add(SectionLabel("PRESKOČENO PRIJE — POPUNI ILI OSTAVI ZA KASNIJE"));
+
+        foreach (var span in Carried.OrderBy(c => c.Start))
+        {
+            var field = new PromptTextField(span.Start, _big, _carriedFill, "preskočeno — upiši ili ostavi prazno");
+            WireField(field);
+            _carriedFields.Add(field);
+            var row = TimedRow(field, span.Start, span.End, carried: true);
+            row.Margin = new Padding(0, Brand.S(8), 0, 0);
+            panel.Controls.Add(row);
+        }
+
+        var divider = new Panel
+        {
+            Width = _innerW,
+            Height = Brand.S(1),
+            BackColor = Palette.White.OverBlack(0.12),
+            Margin = new Padding(0, Brand.S(14), 0, 0),
+        };
+        panel.Controls.Add(divider);
+        return panel;
+    }
+
+    private FlowLayoutPanel BuildMainPanel()
+    {
+        _mainPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = _interior,
+            Width = _innerW,
+        };
+
+        if (Carried.Count > 0)
+        {
+            _periodSectionLabel = SectionLabel(PeriodSectionText());
+            _mainPanel.Controls.Add(_periodSectionLabel);
+        }
+
+        if (_boundaries.Count > 0)
+        {
+            _blockBar = NewBlockBar();
+            _mainPanel.Controls.Add(_blockBar);
+        }
+
+        _segmentsPanel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = _interior,
+            Margin = new Padding(0, Brand.S(14), 0, 0),
+            Width = _innerW,
+        };
+        _mainPanel.Controls.Add(_segmentsPanel);
+        return _mainPanel;
+    }
+
+    private string PeriodSectionText() => $"PERIOD {Fmt.Hhmm(_periodStart)}–{Fmt.Hhmm(_periodEnd)}";
+
+    private BlockBarControl NewBlockBar()
+    {
+        var bar = new BlockBarControl
+        {
+            Width = _innerW,
+            PeriodStart = _periodStart,
+            PeriodEnd = _periodEnd,
+            Boundaries = _boundaries,
+            SplitPoints = _splitPoints,
+            BackColor = _interior,
+            Margin = new Padding(0, Brand.S(14), 0, 0),
+        };
+        bar.SplitToggled += ToggleSplit;
+        bar.SegmentFocused += FocusFieldAt;
+        return bar;
+    }
+
+    /// <summary>Ručni prompt: čime korisnik nastavlja. Ne bilježi se kao unos — samo
+    /// pre-fillava sljedeći prompt, pa se prebacivanje na drugi projekt zapiše u jednom
+    /// koraku.</summary>
+    private FlowLayoutPanel BuildNextUpPanel()
+    {
+        var panel = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = _interior,
+            Width = _innerW,
+        };
+        panel.Controls.Add(SectionLabel("NASTAVLJAM S — NIJE OBAVEZNO"));
+
+        _nextUpField = new PromptTextField(NextUpKey, _big, Palette.White.OverBlack(0.05), "npr. Projekt B — hitni fix");
+        _nextUpField.Width = _innerW;
+        _nextUpField.Margin = new Padding(0, Brand.S(6), 0, 0);
+        WireField(_nextUpField);
+        panel.Controls.Add(_nextUpField);
+
+        var hint = new Label
+        {
+            AutoSize = true,
+            Text = "Sljedeći prompt kreće s ovim opisom.",
+            Font = Brand.Ui(8f),
+            ForeColor = Palette.Gray.With(0.5),
+            BackColor = _interior,
+            Margin = new Padding(0, Brand.S(6), 0, 0),
+        };
+        panel.Controls.Add(hint);
+        return panel;
+    }
+
+    private TrackedLabel SectionLabel(string title) => new()
+    {
+        Text = title,
+        Font = Brand.Ui(7f, FontStyle.Bold),
+        ForeColor = Palette.Gray.With(0.6),
+        Tracking = 1.2f,
+        BackColor = _interior,
+    };
+
     // MARK: - Segment rows
 
     private List<(DateTime Start, DateTime End)> Segments()
@@ -344,6 +512,45 @@ internal sealed class PromptForm : Form
         var l = new Label { AutoSize = false, Text = text, Font = font, ForeColor = fore, BackColor = back, Width = width };
         l.Height = TextRenderer.MeasureText(text, font, new Size(width, int.MaxValue), TextFormatFlags.WordBreak).Height + 2;
         return l;
+    }
+
+    private void WireField(PromptTextField field)
+    {
+        field.SubmitRequested += Submit;
+        field.EscapeRequested += Skip;
+        field.HistoryOlder += () => CycleHistory(field, older: true);
+        field.HistoryNewer += () => CycleHistory(field, older: false);
+        field.FocusChanged += OnFieldFocused;
+        field.Value = _texts.GetValueOrDefault(field.Key, "");
+    }
+
+    /// <summary>Red s vremenom lijevo i poljem desno. Preskočeni red nosi i `↩`.</summary>
+    private Panel TimedRow(PromptTextField field, DateTime start, DateTime end, bool carried)
+    {
+        int labelW = Brand.S(_big ? 96 : 84);
+        var rowPanel = new Panel
+        {
+            Width = _innerW,
+            Height = field.Height,
+            BackColor = _interior,
+        };
+        var label = new Label
+        {
+            AutoSize = false,
+            Text = (carried ? "↩ " : "") + $"{Fmt.Hhmm(start)}–{Fmt.Hhmm(end)}",
+            Font = Brand.Mono(_big ? 9.5f : 8f, FontStyle.Bold),
+            ForeColor = carried ? Palette.Gray.With(0.55) : Palette.Gray,
+            BackColor = _interior,
+            Width = labelW,
+            Height = field.Height,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(0, 0),
+        };
+        field.Width = _innerW - labelW - Brand.S(8);
+        field.Location = new Point(labelW + Brand.S(8), 0);
+        rowPanel.Controls.Add(label);
+        rowPanel.Controls.Add(field);
+        return rowPanel;
     }
 
     private void RebuildSegmentsUI()
@@ -360,47 +567,22 @@ internal sealed class PromptForm : Form
 
         foreach (var seg in segs)
         {
-            var field = new PromptTextField(seg.Start, _big, _fieldFill);
-            field.Value = _texts.GetValueOrDefault(seg.Start, "");
-            field.SubmitRequested += Submit;
-            field.EscapeRequested += HandleEscape;
-            field.HistoryOlder += () => CycleHistory(field, older: true);
-            field.HistoryNewer += () => CycleHistory(field, older: false);
-            field.FocusChanged += OnFieldFocused;
+            var field = new PromptTextField(seg.Start, _big, _fieldFill, "npr. Projekt X — opis zadatka");
+            WireField(field);
             _fields.Add(field);
 
             if (single)
             {
+                // Nerazbijen period nosi vrijeme u naslovu (ili na sekciji), pa se u redu
+                // ne ponavlja.
                 field.Width = _innerW;
                 field.Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : Brand.S(8), 0, 0);
                 _segmentsPanel.Controls.Add(field);
             }
             else
             {
-                int labelW = Brand.S(_big ? 96 : 80);
-                var rowPanel = new Panel
-                {
-                    Width = _innerW,
-                    Height = field.Height,
-                    BackColor = _interior,
-                    Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : Brand.S(8), 0, 0),
-                };
-                var label = new Label
-                {
-                    AutoSize = false,
-                    Text = $"{Fmt.Hhmm(seg.Start)}–{Fmt.Hhmm(seg.End)}",
-                    Font = Brand.Mono(_big ? 9.5f : 8f, FontStyle.Bold),
-                    ForeColor = Palette.Gray,
-                    BackColor = _interior,
-                    Width = labelW,
-                    Height = field.Height,
-                    TextAlign = ContentAlignment.MiddleLeft,
-                    Location = new Point(0, 0),
-                };
-                field.Width = _innerW - labelW - Brand.S(8);
-                field.Location = new Point(labelW + Brand.S(8), 0);
-                rowPanel.Controls.Add(label);
-                rowPanel.Controls.Add(field);
+                var rowPanel = TimedRow(field, seg.Start, seg.End, carried: false);
+                rowPanel.Margin = new Padding(0, _segmentsPanel.Controls.Count == 0 ? 0 : Brand.S(8), 0, 0);
                 _segmentsPanel.Controls.Add(rowPanel);
             }
         }
@@ -411,6 +593,12 @@ internal sealed class PromptForm : Form
             _blockBar.SingleSegment = single;
             _blockBar.Invalidate();
         }
+
+        // Uz preskočene redove period piše na svojoj sekciji, da se ne čita kao da vrijedi
+        // za cijeli prompt.
+        _mainPanel.Visible = ShowsMainPeriod;
+        if (_timeLabel != null) _timeLabel.Visible = ShowsMainPeriod && Carried.Count == 0;
+        if (_periodSectionLabel != null) _periodSectionLabel.Text = PeriodSectionText();
 
         RebuildHints(single);
         Relayout();
@@ -453,20 +641,42 @@ internal sealed class PromptForm : Form
             };
             lbl.Location = new Point(x, (chip.Height - lbl.Height) / 2);
             _hintsPanel.Controls.Add(lbl);
-            x += lbl.Width + Brand.S(14);
+            x += lbl.Width + Brand.S(12);
         }
 
         AddHint("↑↓", "povijest");
         AddHint("Enter", "spremi");
-        if (single)
-        {
-            if (_style == PromptStyle.Floating && !string.IsNullOrEmpty(Prefill))
-                AddHint("Esc", "isto kao zadnje");
-            if (_boundaries.Count > 0)
-                AddHint("✂", "razbij period");
-        }
+        AddHint("Esc", "preskoči");
+        if (single && ShowsMainPeriod && _boundaries.Count > 0)
+            AddHint("✂", "razbij period");
 
         _hintsPanel.Height = Math.Max(chipH, Brand.S(16));
+        _hintsPanel.ResumeLayout(true);
+    }
+
+    /// <summary>Odgoda + "Preskoči" — odgovor nije obavezan.</summary>
+    private void BuildActions()
+    {
+        _actionsPanel.SuspendLayout();
+        _actionsPanel.Controls.Clear();
+
+        var skip = new FlatButton
+        {
+            Text = "Preskoči",
+            TextColor = Palette.Gray,
+            Fill = Color.Transparent,
+            BorderColor = Palette.White.OverBlack(0.22),
+            BorderWidth = 1,
+            CornerRadius = 6,
+            Font = Brand.Ui(9f, FontStyle.Bold),
+            BackColor = _interior,
+            Size = new Size(Brand.S(80), Brand.S(24)),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right,
+        };
+        skip.Location = new Point(_innerW - skip.Width, 0);
+        skip.Click += (_, _) => Skip();
+        _actionsPanel.Controls.Add(skip);
+        _actionsPanel.Height = skip.Height;
 
         if (_request.AllowSnooze)
         {
@@ -478,16 +688,16 @@ internal sealed class PromptForm : Form
                 Font = Brand.Ui(9f, FontStyle.Underline),
                 Align = ContentAlignment.MiddleRight,
                 BackColor = _interior,
-                Height = _hintsPanel.Height,
+                Height = skip.Height,
                 Width = Brand.S(100),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
             };
-            snooze.Location = new Point(_innerW - snooze.Width, 0);
-            snooze.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            snooze.Location = new Point(skip.Left - Brand.S(10) - snooze.Width, 0);
             snooze.Click += (_, _) => _onSnooze();
-            _hintsPanel.Controls.Add(snooze);
+            _actionsPanel.Controls.Add(snooze);
         }
 
-        _hintsPanel.ResumeLayout(true);
+        _actionsPanel.ResumeLayout(true);
     }
 
     // MARK: - Split toggling
@@ -515,29 +725,32 @@ internal sealed class PromptForm : Form
 
     // MARK: - Actions
 
-    private void Submit()
+    /// <summary>Odgovor nije obavezan: segmenti bez teksta su preskočeni i engine ih vraća u
+    /// sljedeći prompt.</summary>
+    private void Submit() => _onSubmit(Result(skipAll: false));
+
+    private void Skip() => _onSubmit(Result(skipAll: true));
+
+    private PromptResult Result(bool skipAll)
     {
         SyncTextsFromFields();
-        var outSegs = new List<PromptSegment>();
-        foreach (var seg in Segments())
+        var segments = new List<PromptSegment>();
+        foreach (var span in Carried.OrderBy(c => c.Start))
+            segments.Add(new PromptSegment(span.Start, span.End,
+                skipAll ? "" : _texts.GetValueOrDefault(span.Start, "")));
+        if (ShowsMainPeriod)
         {
-            string t = _texts.GetValueOrDefault(seg.Start, "").Trim();
-            if (t.Length == 0)
-            {
-                FocusFieldAt(seg.Start);
-                return;
-            }
-            outSegs.Add(new PromptSegment(seg.Start, seg.End, t));
+            foreach (var seg in Segments())
+                segments.Add(new PromptSegment(seg.Start, seg.End,
+                    skipAll ? "" : _texts.GetValueOrDefault(seg.Start, "")));
         }
-        if (outSegs.Count == 0) return;
-        _onSubmit(outSegs);
-    }
-
-    private void HandleEscape()
-    {
-        if (_style == PromptStyle.Floating && Segments().Count == 1 && !string.IsNullOrEmpty(Prefill))
-            _onSubmit(new List<PromptSegment> { new(_periodStart, _periodEnd, Prefill) });
-        // fullscreen or split: esc does nothing
+        return new PromptResult
+        {
+            Segments = segments,
+            // "Nastavljam s" vrijedi i kad se period preskoči — prebacivanje na drugi
+            // projekt je jedini razlog zašto je to polje tamo.
+            NextUp = _request.IsManual ? _texts.GetValueOrDefault(NextUpKey, "") : null,
+        };
     }
 
     private void CycleHistory(PromptTextField field, bool older)
@@ -563,11 +776,16 @@ internal sealed class PromptForm : Form
     private void SyncTextsFromFields()
     {
         foreach (var f in _fields) _texts[f.Key] = f.Value;
+        foreach (var f in _carriedFields) _texts[f.Key] = f.Value;
+        if (_nextUpField is { IsDisposed: false } n) _texts[n.Key] = n.Value;
     }
 
     private void FocusFieldAt(DateTime start)
     {
-        var field = _fields.FirstOrDefault(f => f.Key == start) ?? _fields.FirstOrDefault();
+        var field = _fields.FirstOrDefault(f => f.Key == start)
+            ?? _carriedFields.FirstOrDefault(f => f.Key == start)
+            ?? _fields.FirstOrDefault()
+            ?? _carriedFields.FirstOrDefault();
         field?.FocusBox();
         if (field != null) OnFieldFocused(field);
     }
@@ -576,7 +794,7 @@ internal sealed class PromptForm : Form
     {
         if (keyData == Keys.Escape)
         {
-            HandleEscape();
+            Skip();
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
@@ -627,7 +845,7 @@ internal sealed class PromptForm : Form
         _fullscreenHint = new Label
         {
             AutoSize = true,
-            Text = "Odgovor je obavezan — upiši što radiš i stisni Enter.",
+            Text = "Upiši što radiš i stisni Enter — ili preskoči (Esc), pa te period čeka u sljedećem promptu.",
             Font = Brand.Ui(9.5f),
             ForeColor = Palette.Gray.With(0.7),
             BackColor = Palette.Black,
@@ -695,7 +913,8 @@ internal sealed class PromptForm : Form
     {
         base.OnShown(e);
         Relayout();
-        BeginInvoke(new Action(() => FocusFieldAt(_periodStart)));
+        // Fokus čeka isto koliko i prozor prije nego uzme tipkovnicu (PanelFade) — pop-up koji
+        // iskoči dok tipkaš u drugoj aplikaciji ne smije presresti ostatak rečenice.
         // The prompt often opens while the session is locked or a monitor is asleep; the
         // screen layout can then change under it and the fullscreen form keeps the old
         // screen's size. Re-stick it to the current screen whenever that happens.
@@ -780,20 +999,9 @@ internal sealed class PromptForm : Form
         else if (_boundaries.Count > 0)
         {
             // Period je prešao prag za mrežu blokova — dodaj traku prije segmenata.
-            _blockBar = new BlockBarControl
-            {
-                Width = _innerW,
-                PeriodStart = _periodStart,
-                PeriodEnd = _periodEnd,
-                Boundaries = _boundaries,
-                SplitPoints = _splitPoints,
-                BackColor = _interior,
-                Margin = new Padding(0, Brand.S(14), 0, 0),
-            };
-            _blockBar.SplitToggled += ToggleSplit;
-            _blockBar.SegmentFocused += FocusFieldAt;
-            _stack.Controls.Add(_blockBar);
-            _stack.Controls.SetChildIndex(_blockBar, _stack.Controls.IndexOf(_segmentsPanel));
+            _blockBar = NewBlockBar();
+            _mainPanel.Controls.Add(_blockBar);
+            _mainPanel.Controls.SetChildIndex(_blockBar, _mainPanel.Controls.IndexOf(_segmentsPanel));
         }
 
         RebuildSegmentsUI();

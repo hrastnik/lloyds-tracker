@@ -2,7 +2,10 @@
 
 Nativna macOS menu bar aplikacija za praćenje vremena na poslu, u Lloyds Digital vizualnom stilu (crna `#070707` + žuta `#FBDE07`).
 
-Sjedi u status baru i u zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovori se spremaju lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili exportati u CSV — za lako prepisivanje u firmin online tool.
+Sjedi u status baru i u zadanom intervalu (default 15 min) pita **"Na čemu radiš?"**. Odgovor
+**nije obavezan** — prompt se može preskočiti, pa taj period čeka u sljedećem promptu. Odgovori
+se spremaju lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
+exportati u CSV — za lako prepisivanje u firmin online tool.
 
 ## Build i instalacija
 
@@ -22,10 +25,35 @@ Zahtjevi: macOS 14+, Xcode toolchain (Swift 6).
 2. Svakih 15 min iskoči prompt. Polje je **pre-fillano zadnjim unosom**:
    - `⏎` — spremi (ako radiš isto, samo stisni Enter)
    - `↑` / `↓` — listanje povijesti nedavnih unosa
-   - `esc` — spremi isto kao zadnji put (samo floating stil)
+   - `esc` / *Preskoči* — ne bilježi ništa, period se vraća u sljedeći prompt
    - *Odgodi 5 min* — snooze (samo floating stil)
-3. **Pauziraj** (15/30/60 min ili do nastavka) — bez promptanja, vrijeme se bilježi kao pauza.
-4. **Završi dan** → otvara se pregled dana s grupiranim vremenima, *Kopiraj pregled* ili *Export CSV*.
+3. **Zapiši sada** — ručni prompt kad god treba (npr. kod prebacivanja na drugi projekt).
+4. **Pauziraj** (15/30/60 min ili do nastavka) — bez promptanja, vrijeme se bilježi kao pauza.
+5. **Završi dan** → otvara se pregled dana s grupiranim vremenima, *Kopiraj pregled* ili *Export CSV*.
+
+Pop-upi se pojavljuju **s fade-inom**, a tipkovnicu preuzimaju ~0.9 s nakon toga — prompt koji
+iskoči dok pišeš u drugoj aplikaciji tako ne presretne ostatak rečenice (ni ne pregazi pre-fill).
+
+### Preskakanje prompta
+
+Odgovor nije obavezan. *Preskoči* (ili `esc`) ne bilježi ništa i **period se ne troši** — sam
+iskoči u sljedećem promptu, produžen za novi interval: preskočiš 10:00–10:15, a u 10:30 te
+prompt pita za 10:00–10:30 (i to se može razbiti na više unosa s `✂`). Isto vrijedi i za
+pojedini blok razbijenog perioda — ostavi ga praznog i vratit će se.
+
+Ako između preskočenog perioda i sljedećeg stane pauza (period nije više susjedan), preskočeno
+se nosi kao **zasebni red** iznad crte (`↩ 09:45–10:15`) — popuni ga kad znaš ili ostavi dalje.
+Zadnji prompt dana nosi i te redove; ono što se tamo preskoči više se ne bilježi.
+
+### Ručni prompt — "Zapiši sada"
+
+U meniju iz status bara, dok je tracking aktivan. Zapisuje period **od zadnjeg zapisa do sada**,
+bez čekanja na interval — za trenutak kad usred projekta A uskoči hitan zadatak na projektu B.
+
+Uz opis perioda ima i polje **„Nastavljam s”** (nije obavezno): taj tekst se ne bilježi kao
+unos, nego postaje **pre-fill sljedećeg prompta** — pa te redovni prompt u zakazano vrijeme
+pita za ostatak intervala već s opisom projekta B. Ritam promptanja se ne mijenja: sljedeći
+prompt iskoči u svoje vrijeme (10:15, 10:30…) kao i inače.
 
 ### Prozori i Cmd+Tab
 
@@ -39,7 +67,13 @@ Ikona (`AppIcon.icns`) se generira kod builda iz istog koda kao pločica u traci
 
 ### Pregled dana
 
-Dva taba: **Grupirano** (zbrojeno po opisu) i **Kronološki** (unos po unos, s brisanjem).
+Dva taba: **Grupirano** (zbrojeno po opisu) i **Kronološki** (unos po unos, s ispravkom i
+brisanjem).
+
+Svaki red u kronološkom tabu ima `✏️` — **Ispravi unos**: opis (uz padajući izbor iz povijesti),
+vrijeme *od*/*do* i vrsta (rad/pauza). Radi i za prijašnje dane. Kod spojenog reda (`2×`)
+promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan unos** —
+novi raspon nema stare granice blokova (sheet na to i upozori).
 
 U kronološkom tabu opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -94,6 +128,18 @@ kad se odgovori na zadnji prompt), pa unosi ostaju ispravni i kad se odgovori sl
 Ako je u tom trenutku aktivna odsutnost (idle/zaključan ekran), to razdoblje se bilježi kao
 pauza, a pita se samo za rad prije odsutnosti.
 
+#### Prompt koji je prenoćio
+
+Zatvoriš laptop bez odgovora na prompt i otvoriš ga **sutra**: dan se ne nastavlja od jučer.
+Čim se app probudi, period se **odreže na zadano vrijeme zaustavljanja** i dan se zatvara, pa
+zadnji prompt pita za taj skraćeni period (i to piše u njemu) — a odgovor završi kod jučerašnjeg
+datuma, s ispravnim vremenima. Produženja iz upozorenja (+15 / +30 / +45 / +1 h) se poštuju:
+rez je na produženom vremenu.
+
+Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se koristi vrijeme iz
+te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
+ponoć.
+
 ## Postavke
 
 Status bar ikona → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -101,7 +147,7 @@ Status bar ikona → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, 
 | Postavka | Default |
 |---|---|
 | Interval promptanja | 15 min (5–60) |
-| Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
+| Stil prompta | Floating panel / Cijeli ekran (preko svega) |
 | Zvuk kod prompta | uključen |
 | Podsjetnik na početak radnog dana + vrijeme | uključeno, 8:30 |
 | Ponudi i nadoknadu od tog vremena | uključeno |
@@ -132,10 +178,11 @@ Sources/LloydsTracker/
 ├── App.swift              # MenuBarExtra + prozori (SwiftUI App)
 ├── TrackerEngine.swift    # stanje, timer, prompt logika, idle/pauze
 ├── PromptController.swift # NSPanel (floating) / NSWindow (fullscreen)
-├── PromptView.swift       # UI prompta s povijesti i pre-fillom
+├── PromptView.swift       # UI prompta: povijest, pre-fill, preskakanje, "nastavljam s"
 ├── MenuBarView.swift      # popover iz status bara
-├── SummaryView.swift      # pregled dana, copy/CSV export
+├── SummaryView.swift      # pregled dana, ispravak/brisanje unosa, copy/CSV export
 ├── SettingsView.swift     # postavke
+├── EntryEditView.swift    # sheet za ispravak unosa (Pregled dana → Kronološki)
 ├── StartupReminder.swift  # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.swift  # upozorenje 1 min prije auto-stopa + produženja
 ├── AppIcon.swift          # brand ikona (Dock/Cmd+Tab + izvor za AppIcon.icns)

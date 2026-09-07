@@ -32,8 +32,7 @@ internal sealed class StartupReminderController
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
         form.FormClosed += (_, _) => { if (_form == form) Forget(); };
-        form.Show();
-        form.Activate();
+        form.Appear();
         ShownAt = DateTime.Now;
         ShownBackfillFrom = backfillFrom;
     }
@@ -136,6 +135,11 @@ internal sealed class StartupReminderForm : Form
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Top + Brand.S(24));
         Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
     }
+
+    /// <summary>Pop-up ne uzima tipkovnicu odmah — vidi <see cref="PanelFade"/>.</summary>
+    protected override bool ShowWithoutActivation => true;
+
+    public void Appear() => PanelFade.Appear(this);
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {

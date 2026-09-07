@@ -1,20 +1,25 @@
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use chrono::{DateTime, Local};
+use gtk4::gdk::Key;
+use gtk4::glib::Propagation;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Application, Box as GtkBox, Button, DrawingArea, Entry, EventControllerKey, Fixed,
-    Overlay, Window,
+    Label, Orientation, Overlay, Separator, Window,
 };
-use gtk4::glib::Propagation;
-use gtk4::gdk::Key;
 
 use crate::engine::grid_boundaries;
-use crate::models::{PromptRequest, PromptSegment, PromptStyle};
+use crate::models::{PromptRequest, PromptResult, PromptSegment, PromptStyle};
 use crate::theme::{Fmt, YELLOW_RGB};
 use crate::ui;
+
+/// Ključ polja "nastavljam s" u `texts` — dijeli ga s opisima segmenata, pa listanje
+/// povijesti (↑/↓) radi i tamo. Nikad se ne poklapa s pravim vremenom bloka (macOS
+/// `Date.distantFuture`).
+const NEXT_UP_KEY: i64 = i64::MAX;
 
 /// Prompt "Na čemu radiš?" — floating panel ili preko cijelog ekrana.
 ///
@@ -27,11 +32,21 @@ pub struct PromptWindow {
     style: PromptStyle,
     history: Vec<String>,
     state: RefCell<PromptState>,
+    /// Raspon u zaglavlju; uz preskočene redove ga zamjenjuje `period_label`.
+    range_label: Label,
+    /// "PERIOD hh:mm–hh:mm" nad glavnim periodom (samo kad ima preskočenih redova).
+    period_label: Label,
+    /// Glavni period — sakrije se kad je degeneriran a ima preskočenih redova.
+    main_box: GtkBox,
     segments_box: GtkBox,
+    bar_overlay: Overlay,
     bar_area: DrawingArea,
     bar_fixed: Fixed,
+    scissors_hint: GtkBox,
     split_buttons: RefCell<Vec<(i64, Button)>>,
-    on_submit: Box<dyn Fn(Vec<PromptSegment>)>,
+    /// Polja po ključu segmenta (+ `NEXT_UP_KEY`) — za fokus i listanje povijesti.
+    fields: RefCell<HashMap<i64, Entry>>,
+    on_submit: Box<dyn Fn(PromptResult)>,
     on_snooze: Box<dyn Fn()>,
 }
 
@@ -54,19 +69,27 @@ impl PromptWindow {
         request: PromptRequest,
         style: PromptStyle,
         history: Vec<String>,
-        on_submit: impl Fn(Vec<PromptSegment>) + 'static,
+        on_submit: impl Fn(PromptResult) + 'static,
         on_snooze: impl Fn() + 'static,
     ) -> Rc<Self> {
         let start = request.start;
         let end = request.end.unwrap_or_else(Local::now).max(start);
 
+        // Pre-fill dobiva samo glavni period; preskočeni redovi ostaju prazni jer su
+        // svjesno ostavljeni za kasnije — Enter ih ne smije napuniti zadnjim unosom.
         let mut texts = HashMap::new();
         texts.insert(start.timestamp(), history.first().cloned().unwrap_or_default());
 
+        // Fokus ide na prvi red — s preskočenim periodima to je najstariji od njih.
+        let first_key = request
+            .carried
+            .iter()
+            .map(|span| span.start)
+            .min()
+            .unwrap_or(start)
+            .timestamp();
+
         let content = ui::vbox(14);
-        let segments_box = ui::vbox(8);
-        let bar_area = DrawingArea::new();
-        let bar_fixed = Fixed::new();
 
         let prompt = Rc::new(PromptWindow {
             window: Window::builder().application(app).title("Lloyds Tracker").build(),
@@ -80,19 +103,35 @@ impl PromptWindow {
                 texts,
                 drafts: HashMap::new(),
                 history_indices: HashMap::new(),
-                focused: Some(start.timestamp()),
+                focused: Some(first_key),
             }),
-            segments_box,
-            bar_area,
-            bar_fixed,
+            range_label: ui::label("", &["mono", "muted"]),
+            period_label: ui::label("", &["section-label"]),
+            main_box: ui::vbox(14),
+            segments_box: ui::vbox(8),
+            bar_overlay: Overlay::new(),
+            bar_area: DrawingArea::new(),
+            bar_fixed: Fixed::new(),
+            scissors_hint: ui::hint("✂", "razbij period"),
             split_buttons: RefCell::new(Vec::new()),
+            fields: RefCell::new(HashMap::new()),
             on_submit: Box::new(on_submit),
             on_snooze: Box::new(on_snooze),
         });
 
         prompt.build(&content);
         prompt.rebuild();
-        prompt.window.present();
+
+        // Fade + odgođeno preuzimanje tipkovnice: pop-up koji iskoči dok tipkaš u drugoj
+        // aplikaciji ne smije presresti ostatak rečenice (ni pregaziti pre-fill).
+        {
+            let me = Rc::downgrade(&prompt);
+            ui::PanelFade::appear_with(&prompt.window, move || {
+                if let Some(me) = me.upgrade() {
+                    me.focus_current_field();
+                }
+            });
+        }
         prompt
     }
 
@@ -113,16 +152,32 @@ impl PromptWindow {
         }
         header.append(&title);
         header.append(&ui::spacer());
-        let range = ui::label("", &["mono", "muted"]);
-        header.append(&range);
+        header.append(&self.range_label);
         content.append(&header);
-
-        // Raspon se osvježava kod produženja perioda, pa ga držimo pod ključem.
-        unsafe { self.window.set_data("range-label", range) };
 
         if let Some(note) = &self.request.note {
             content.append(&ui::wrapped(note, &["accent"], if big { 70 } else { 55 }));
         }
+
+        // Preskočeni periodi iz prijašnjih promptova su svoja skupina, iznad crte —
+        // traka blokova (`✂`) i pre-fill vrijede samo za glavni period pod njom.
+        if !self.request.carried.is_empty() {
+            let section = ui::vbox(8);
+            section.append(&ui::label(
+                "PRESKOČENO PRIJE — POPUNI ILI OSTAVI ZA KASNIJE",
+                &["section-label"],
+            ));
+            for (from, to) in self.carried_segments() {
+                section.append(&self.segment_row(from, to, false, big, true));
+            }
+            content.append(&section);
+            content.append(&Separator::new(Orientation::Horizontal));
+        }
+
+        // Uz preskočene redove period piše na svojoj sekciji, da se ne čita kao da
+        // vrijedi za cijeli prompt.
+        self.period_label.set_visible(!self.request.carried.is_empty());
+        self.main_box.append(&self.period_label);
 
         // Traka blokova: cairo crta blokove i vremena, a škarice su pravi gumbi u Fixedu
         // iznad nje.
@@ -144,46 +199,63 @@ impl PromptWindow {
                 }
             });
         }
-        let overlay = Overlay::new();
-        overlay.set_child(Some(&self.bar_area));
+        self.bar_overlay.set_child(Some(&self.bar_area));
         self.bar_fixed.set_valign(Align::Start);
-        overlay.add_overlay(&self.bar_fixed);
-        content.append(&overlay);
-        unsafe { self.window.set_data("bar-overlay", overlay) };
+        self.bar_overlay.add_overlay(&self.bar_fixed);
+        self.main_box.append(&self.bar_overlay);
+        self.main_box.append(&self.segments_box);
+        content.append(&self.main_box);
 
-        content.append(&self.segments_box);
+        if self.request.is_manual {
+            content.append(&self.next_up_field(big));
+        }
 
-        // Podnožje: tipkovnički savjeti + odgoda.
-        let hints = ui::hbox(14);
+        // Dva reda: gore tipkovnica, dolje akcije. U jednom redu se na 420 px natpisi
+        // lome u dva reda.
+        let footer = ui::vbox(10);
+        let hints = ui::hbox(12);
         hints.append(&ui::hint("↑↓", "povijest"));
         hints.append(&ui::hint("⏎", "spremi"));
-        if self.style == PromptStyle::Floating && !self.prefill().is_empty() {
-            hints.append(&ui::hint("esc", "isto kao zadnje"));
-        }
-        hints.append(&ui::hint("✂", "razbij period"));
+        hints.append(&ui::hint("esc", "preskoči"));
+        hints.append(&self.scissors_hint);
         hints.append(&ui::spacer());
+        footer.append(&hints);
+
+        let actions = ui::hbox(10);
+        actions.append(&ui::spacer());
         if self.request.allow_snooze {
             let me = Rc::downgrade(self);
-            hints.append(&ui::button("Odgodi 5 min", &["link"], move || {
+            actions.append(&ui::button("Odgodi 5 min", &["link"], move || {
                 if let Some(me) = me.upgrade() {
                     me.window.close();
                     (me.on_snooze)();
                 }
             }));
         }
-        content.append(&hints);
+        let skip = {
+            let me = Rc::downgrade(self);
+            ui::button("Preskoči", &["skip"], move || {
+                if let Some(me) = me.upgrade() {
+                    me.skip();
+                }
+            })
+        };
+        skip.set_tooltip_text(Some("Ne bilježi ništa — period se vraća u sljedeći prompt"));
+        actions.append(&skip);
+        footer.append(&actions);
+        content.append(&footer);
 
         ui::pad(content, if big { 28 } else { 18 });
         content.set_size_request(if big { 560 } else { 420 }, -1);
 
-        // Esc na razini prozora — u floating stilu sprema isto kao zadnji put.
+        // Esc na razini prozora — preskače cijeli prompt.
         let key = EventControllerKey::new();
         {
             let me = Rc::downgrade(self);
             key.connect_key_pressed(move |_, keyval, _, _| {
                 if keyval == Key::Escape {
                     if let Some(me) = me.upgrade() {
-                        me.handle_escape();
+                        me.skip();
                     }
                     return Propagation::Stop;
                 }
@@ -217,7 +289,7 @@ impl PromptWindow {
                 outer.append(&brand);
                 outer.append(content);
                 outer.append(&ui::label(
-                    "Odgovor je obavezan — upiši što radiš i stisni Enter.",
+                    "Upiši što radiš i stisni ⏎ — ili preskoči (esc), pa te period čeka u sljedećem promptu.",
                     &["muted-dim"],
                 ));
 
@@ -227,9 +299,7 @@ impl PromptWindow {
         }
     }
 
-    fn prefill(&self) -> String {
-        self.history.first().cloned().unwrap_or_default()
-    }
+    // MARK: - Segmenti
 
     /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti.
     fn boundaries(&self) -> Vec<DateTime<Local>> {
@@ -237,8 +307,20 @@ impl PromptWindow {
         grid_boundaries(s.start, s.end)
     }
 
-    /// Spojeni nizovi blokova s jednim opisom.
-    fn segments(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+    /// Preskočeni periodi iz prijašnjih promptova, najstariji prvi.
+    fn carried_segments(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+        let mut spans: Vec<_> = self
+            .request
+            .carried
+            .iter()
+            .map(|span| (span.start, span.end))
+            .collect();
+        spans.sort_by_key(|(start, _)| *start);
+        spans
+    }
+
+    /// Spojeni nizovi blokova glavnog perioda s jednim opisom.
+    fn main_segments(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
         let s = self.state.borrow();
         let mut result = Vec::new();
         let mut from = s.start;
@@ -252,26 +334,46 @@ impl PromptWindow {
         result
     }
 
+    /// Degeneriran glavni period (npr. ručni prompt odmah nakon odgovora, ili dan zatvoren
+    /// točno na granici) skriva se ako ima preskočenih redova — inače ostaje kao jedini red.
+    fn shows_main_period(&self) -> bool {
+        let s = self.state.borrow();
+        s.end > s.start || self.request.carried.is_empty()
+    }
+
+    fn segments(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+        let mut all = self.carried_segments();
+        if self.shows_main_period() {
+            all.extend(self.main_segments());
+        }
+        all
+    }
+
     // MARK: - Ponovna izgradnja
 
-    /// Poziva se kod razdvajanja/spajanja blokova i kod produženja perioda.
+    /// Poziva se kod razdvajanja/spajanja blokova i kod produženja perioda. Preskočeni
+    /// redovi se ne prekrajaju — oni se ne mijenjaju dok je prompt otvoren.
     fn rebuild(self: &Rc<Self>) {
-        let segments = self.segments();
-        let boundaries = self.boundaries();
         let big = self.big();
-
-        {
+        let shows_main = self.shows_main_period();
+        let main = self.main_segments();
+        let boundaries = if shows_main { self.boundaries() } else { Vec::new() };
+        let (start, end) = {
             let s = self.state.borrow();
-            if let Some(range) = unsafe { self.window.data::<gtk4::Label>("range-label") } {
-                let range = unsafe { range.as_ref() };
-                range.set_text(&format!("{} – {}", Fmt::hhmm(s.start), Fmt::hhmm(s.end)));
-            }
-        }
+            (s.start, s.end)
+        };
 
+        self.range_label
+            .set_text(&format!("{} – {}", Fmt::hhmm(start), Fmt::hhmm(end)));
+        self.range_label
+            .set_visible(shows_main && self.request.carried.is_empty());
+        self.period_label
+            .set_text(&format!("PERIOD {}–{}", Fmt::hhmm(start), Fmt::hhmm(end)));
+        self.main_box.set_visible(shows_main);
         // Traka je vidljiva samo kad period uopće ima gdje puknuti.
-        if let Some(overlay) = unsafe { self.window.data::<Overlay>("bar-overlay") } {
-            unsafe { overlay.as_ref() }.set_visible(!boundaries.is_empty());
-        }
+        self.bar_overlay.set_visible(!boundaries.is_empty());
+        self.scissors_hint
+            .set_visible(main.len() == 1 && shows_main && !boundaries.is_empty());
 
         // Škarice.
         for (_, button) in self.split_buttons.borrow_mut().drain(..) {
@@ -302,22 +404,38 @@ impl PromptWindow {
         self.reposition_split_buttons();
         self.bar_area.queue_draw();
 
-        // Redovi segmenata.
+        // Redovi glavnog perioda; polja preskočenih redova i "nastavljam s" ostaju.
         while let Some(child) = self.segments_box.first_child() {
             self.segments_box.remove(&child);
         }
-        let single = segments.len() == 1;
-        for (from, to) in &segments {
-            self.segments_box.append(&self.segment_row(*from, *to, single, big));
+        let keep: HashSet<i64> = self
+            .carried_segments()
+            .iter()
+            .map(|(from, _)| from.timestamp())
+            .chain(std::iter::once(NEXT_UP_KEY))
+            .collect();
+        self.fields.borrow_mut().retain(|key, _| keep.contains(key));
+
+        // Nerazbijen period nosi vrijeme u naslovu (ili na sekciji), pa se u redu ne
+        // ponavlja.
+        let single = main.len() == 1;
+        for (from, to) in &main {
+            let row = self.segment_row(*from, *to, single, big, false);
+            self.segments_box.append(&row);
         }
 
-        // Fokus na prvi prazan segment, inače na zapamćeni.
-        let focus_key = self.state.borrow().focused;
-        if let Some(key) = focus_key {
-            if let Some(entry) = self.entry_for(key) {
-                entry.grab_focus();
-                entry.set_position(-1);
-            }
+        self.focus_current_field();
+    }
+
+    /// Fokus na zapamćeni segment (ili prvi red, ako je taj u međuvremenu otpao).
+    fn focus_current_field(&self) {
+        let key = self.state.borrow().focused;
+        let entry = key
+            .and_then(|key| self.entry_for(key))
+            .or_else(|| self.segments().first().and_then(|(from, _)| self.entry_for(from.timestamp())));
+        if let Some(entry) = entry {
+            entry.grab_focus();
+            entry.set_position(-1);
         }
     }
 
@@ -339,29 +457,37 @@ impl PromptWindow {
     }
 
     fn entry_for(&self, key: i64) -> Option<Entry> {
-        let mut child = self.segments_box.first_child();
-        while let Some(row) = child {
-            if let Some(data) = unsafe { row.data::<Entry>("segment-entry") } {
-                let entry = unsafe { data.as_ref() };
-                if unsafe { row.data::<i64>("segment-key") }
-                    .map(|k| unsafe { *k.as_ref() })
-                    == Some(key)
-                {
-                    return Some(entry.clone());
-                }
-            }
-            child = row.next_sibling();
-        }
-        None
+        self.fields.borrow().get(&key).cloned()
     }
 
-    fn segment_row(self: &Rc<Self>, from: DateTime<Local>, to: DateTime<Local>, single: bool, big: bool) -> GtkBox {
+    fn segment_row(
+        self: &Rc<Self>,
+        from: DateTime<Local>,
+        to: DateTime<Local>,
+        single: bool,
+        big: bool,
+        carried: bool,
+    ) -> GtkBox {
         let key = from.timestamp();
         let row = ui::hbox(8);
 
         if !single {
-            let time = ui::label(&format!("{}–{}", Fmt::hhmm(from), Fmt::hhmm(to)), &["mono", "muted"]);
-            time.set_width_chars(if big { 12 } else { 11 });
+            let text = if carried {
+                format!("↩ {}–{}", Fmt::hhmm(from), Fmt::hhmm(to))
+            } else {
+                format!("{}–{}", Fmt::hhmm(from), Fmt::hhmm(to))
+            };
+            let time = ui::label(&text, &["mono", if carried { "muted-faint" } else { "muted" }]);
+            time.set_width_chars(if carried {
+                13
+            } else if big {
+                12
+            } else {
+                11
+            });
+            if carried {
+                time.set_tooltip_text(Some("Preskočeni period iz prijašnjeg prompta"));
+            }
             row.append(&time);
         }
 
@@ -370,11 +496,45 @@ impl PromptWindow {
         if big {
             entry.add_css_class("big");
         }
+        if carried {
+            entry.add_css_class("carried");
+        }
         entry.set_hexpand(true);
-        entry.set_placeholder_text(Some("npr. Projekt X — opis zadatka"));
-        entry.set_text(&self.state.borrow().texts.get(&key).cloned().unwrap_or_default());
+        entry.set_placeholder_text(Some(if carried {
+            "preskočeno — upiši ili ostavi prazno"
+        } else {
+            "npr. Projekt X — opis zadatka"
+        }));
+        self.wire_field(&entry, key);
 
-        // Tekst se čuva na svaku promjenu, da preživi razdvajanje/spajanje i produženje.
+        row.append(&entry);
+        row
+    }
+
+    /// Ručni prompt: čime korisnik nastavlja. Ne bilježi se kao unos — samo pre-fillava
+    /// sljedeći prompt, pa se prebacivanje na drugi projekt zapiše u jednom koraku.
+    fn next_up_field(self: &Rc<Self>, big: bool) -> GtkBox {
+        let box_ = ui::vbox(6);
+        box_.append(&ui::label("NASTAVLJAM S — NIJE OBAVEZNO", &["section-label"]));
+
+        let entry = Entry::new();
+        entry.add_css_class("brand");
+        entry.add_css_class("next-up");
+        if big {
+            entry.add_css_class("big");
+        }
+        entry.set_hexpand(true);
+        entry.set_placeholder_text(Some("npr. Projekt B — hitni fix"));
+        self.wire_field(&entry, NEXT_UP_KEY);
+        box_.append(&entry);
+
+        box_.append(&ui::label("Sljedeći prompt kreće s ovim opisom.", &["footnote"]));
+        box_
+    }
+
+    /// Tekst se čuva na svaku promjenu, da preživi razdvajanje/spajanje i produženje.
+    fn wire_field(self: &Rc<Self>, entry: &Entry, key: i64) {
+        entry.set_text(&self.state.borrow().texts.get(&key).cloned().unwrap_or_default());
         {
             let me = Rc::downgrade(self);
             entry.connect_changed(move |e| {
@@ -421,13 +581,7 @@ impl PromptWindow {
             });
         }
         entry.add_controller(key_controller);
-
-        row.append(&entry);
-        unsafe {
-            row.set_data("segment-entry", entry);
-            row.set_data("segment-key", key);
-        }
-        row
+        self.fields.borrow_mut().insert(key, entry.clone());
     }
 
     // MARK: - Traka blokova
@@ -438,7 +592,7 @@ impl PromptWindow {
             (s.start, s.end, s.focused)
         };
         let total = ((end - start).num_seconds() as f64).max(1.0);
-        let segments = self.segments();
+        let segments = self.main_segments();
         let single = segments.len() == 1;
 
         for (from, to) in &segments {
@@ -471,16 +625,22 @@ impl PromptWindow {
     // MARK: - Akcije
 
     fn toggle_split(self: &Rc<Self>, key: i64) {
-        {
+        let inserting = !self.state.borrow().splits.contains(&key);
+        if inserting {
             let mut s = self.state.borrow_mut();
-            if s.splits.contains(&key) {
-                s.splits.remove(&key);
-                s.focused = Some(s.start.timestamp());
-            } else {
-                s.splits.insert(key);
-                s.texts.entry(key).or_default();
-                s.focused = Some(key);
-            }
+            s.splits.insert(key);
+            s.texts.entry(key).or_default();
+            s.focused = Some(key);
+        } else {
+            self.state.borrow_mut().splits.remove(&key);
+            let segments = self.main_segments();
+            let target = segments
+                .iter()
+                .rev()
+                .find(|(from, _)| from.timestamp() <= key)
+                .map(|(from, _)| from.timestamp())
+                .unwrap_or_else(|| self.state.borrow().start.timestamp());
+            self.state.borrow_mut().focused = Some(target);
         }
         self.rebuild();
     }
@@ -512,43 +672,40 @@ impl PromptWindow {
         }
     }
 
+    /// Odgovor nije obavezan: segmenti bez teksta su preskočeni i engine ih vraća u
+    /// sljedeći prompt.
     fn submit(self: &Rc<Self>) {
-        let mut out = Vec::new();
-        for (from, to) in self.segments() {
-            let key = from.timestamp();
-            let text = self.state.borrow().texts.get(&key).cloned().unwrap_or_default();
-            let text = text.trim().to_string();
-            if text.is_empty() {
-                // Prazan segment — fokusiraj ga umjesto da spremimo nepotpun period.
-                if let Some(entry) = self.entry_for(key) {
-                    entry.grab_focus();
-                }
-                return;
-            }
-            out.push(PromptSegment { start: from, end: to, text });
-        }
-        if out.is_empty() {
-            return;
-        }
-        self.window.close();
-        (self.on_submit)(out);
+        self.finish(false);
     }
 
-    fn handle_escape(self: &Rc<Self>) {
-        // Fullscreen ili razdvojeno: esc namjerno ne radi ništa (odgovor je obavezan).
-        if self.style != PromptStyle::Floating {
-            return;
-        }
-        let prefill = self.prefill();
-        if self.segments().len() != 1 || prefill.is_empty() {
-            return;
-        }
-        let (start, end) = {
-            let s = self.state.borrow();
-            (s.start, s.end)
-        };
+    fn skip(self: &Rc<Self>) {
+        self.finish(true);
+    }
+
+    fn finish(self: &Rc<Self>, skip_all: bool) {
+        let texts = self.state.borrow().texts.clone();
+        let segments = self
+            .segments()
+            .into_iter()
+            .map(|(start, end)| PromptSegment {
+                start,
+                end,
+                text: if skip_all {
+                    String::new()
+                } else {
+                    texts.get(&start.timestamp()).cloned().unwrap_or_default()
+                },
+            })
+            .collect();
+        // "Nastavljam s" vrijedi i kad se period preskoči — prebacivanje na drugi projekt
+        // je jedini razlog zašto je to polje tamo.
+        let next_up = self
+            .request
+            .is_manual
+            .then(|| texts.get(&NEXT_UP_KEY).cloned().unwrap_or_default());
+
         self.window.close();
-        (self.on_submit)(vec![PromptSegment { start, end, text: prefill }]);
+        (self.on_submit)(PromptResult { segments, next_up });
     }
 
     /// Produži period vidljivog prompta do nove granice (skupno vrijeme). Upisani tekst i
@@ -559,6 +716,12 @@ impl PromptWindow {
             s.end = end.max(s.start);
         }
         self.rebuild();
+    }
+
+    /// Vraća već otvoreni prompt u prvi plan — "Zapiši sada" dok prompt visi.
+    pub fn focus(&self) {
+        self.window.present();
+        self.focus_current_field();
     }
 
     pub fn close(&self) {

@@ -19,6 +19,8 @@ internal sealed class MenuBarPopover : Form
     private readonly Action _quit;
 
     private readonly WinFormsTimer _tick = new() { Interval = 1000 };
+    /// <summary>Tooltip za gumbe (macOS `.help(…)`).</summary>
+    private readonly ToolTip _tips = new();
     private Label? _countdown;
     private bool _suppressHide;
 
@@ -153,6 +155,24 @@ internal sealed class MenuBarPopover : Form
             rowY += info.Height + Brand.S(2);
         }
         rowY += Brand.S(4);
+
+        // "Zapiši sada" — prompt na zahtjev, iznad Pauziraj / Završi dan.
+        if (_engine.CanPromptNow)
+        {
+            var now = new FlatButton
+            {
+                Text = "✎  Zapiši sada", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12),
+                BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 8,
+                Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black,
+                Size = new Size(Width_ - Brand.S(32), Brand.S(30)), Location = new Point(Brand.S(16), rowY),
+            };
+            _tips.SetToolTip(now, "Zapiši period do sada i (ako želiš) reci čime nastavljaš");
+            // Popover se ne zatvara sam kad se klikne gumb — bez ovoga bi prompt iskočio
+            // ispod njega.
+            now.Click += (_, _) => { HidePopover(); _engine.ManualPrompt(); };
+            Controls.Add(now);
+            rowY += Brand.S(30) + Brand.S(8);
+        }
 
         if (_engine.IsTracking)
         {

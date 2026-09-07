@@ -15,6 +15,8 @@ pub enum TrayCommand {
     /// None = pauza do ručnog nastavka.
     Pause(Option<i64>),
     Resume,
+    /// "Zapiši sada" — ručni prompt za period do sada.
+    PromptNow,
     Stop,
     OpenSummary,
     OpenSettings,
@@ -34,6 +36,7 @@ pub struct TraySnapshot {
     pub hidden: usize,
     pub is_tracking: bool,
     pub is_paused: bool,
+    pub can_prompt_now: bool,
 }
 
 /// Koliko zadnjih unosa stane u meni — isto kao macOS popover.
@@ -63,6 +66,7 @@ impl TraySnapshot {
             hidden: engine.entries.len().saturating_sub(MAX_VISIBLE_ENTRIES),
             is_tracking: engine.is_tracking,
             is_paused: engine.pause_until.is_some(),
+            can_prompt_now: engine.can_prompt_now(),
         }
     }
 }
@@ -189,7 +193,10 @@ impl ksni::Tray for LloydsTray {
         }
         items.push(MenuItem::Separator);
 
-        // Kontrole.
+        // Kontrole. "Zapiši sada" je nad njima, kao u macOS popoveru.
+        if s.can_prompt_now {
+            items.push(action("Zapiši sada", TrayCommand::PromptNow));
+        }
         if s.is_tracking {
             if s.is_paused {
                 items.push(action("Nastavi", TrayCommand::Resume));

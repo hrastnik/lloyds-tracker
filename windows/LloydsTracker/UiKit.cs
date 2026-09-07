@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Windows.Forms;
+using WinFormsTimer = System.Windows.Forms.Timer;
 
 namespace LloydsTracker;
 
@@ -54,6 +55,81 @@ internal static class Brand
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+    }
+}
+
+/// <summary>Gentle pop-up entrance: a fade plus a short slide, instead of the window
+/// "barging in" out of nowhere.
+///
+/// On top of that, the window <b>doesn't take the keyboard right away</b>. A pop-up that
+/// becomes active the same instant steals typing mid-word — it appears while you're typing in
+/// another app and the rest of the sentence lands in the prompt's field (overwriting the
+/// prefill). So the forms declare <c>ShowWithoutActivation</c> and only activate after
+/// <see cref="KeyDelayMs"/>; the field focus waits exactly as long.</summary>
+internal static class PanelFade
+{
+    public const int DurationMs = 280;
+    /// <summary>How long the pop-up waits before it takes the keyboard.</summary>
+    public const int KeyDelayMs = 900;
+
+    private const int FrameMs = 15;
+
+    /// <summary>Shows <paramref name="form"/> and animates it towards the position it lays
+    /// itself out at. <paramref name="slide"/> is the starting Y offset (positive = drops in
+    /// from above). <paramref name="keyDelayMs"/> of 0 means "take the keyboard right away";
+    /// <paramref name="onKeyboard"/> runs the moment the window becomes active.</summary>
+    public static void Appear(Form form, int slide = 10, int keyDelayMs = KeyDelayMs, Action? onKeyboard = null)
+    {
+        form.Opacity = 0;
+        // ShowWithoutActivation keeps the keyboard wherever it was; Show() only maps the window.
+        form.Show();
+        if (form.IsDisposed) return;
+
+        var target = form.Location;
+        int offset = Brand.S(slide);
+        form.Location = new Point(target.X, target.Y - offset);
+
+        var start = DateTime.Now;
+        var fade = new WinFormsTimer { Interval = FrameMs };
+        fade.Tick += (_, _) =>
+        {
+            if (form.IsDisposed || !form.Visible)
+            {
+                fade.Stop();
+                fade.Dispose();
+                return;
+            }
+            double t = Math.Clamp((DateTime.Now - start).TotalMilliseconds / DurationMs, 0, 1);
+            // easeOut, like the CAMediaTimingFunction on the macOS side.
+            double eased = 1 - Math.Pow(1 - t, 3);
+            form.Opacity = eased;
+            form.Location = new Point(target.X, target.Y - (int)Math.Round(offset * (1 - eased)));
+            if (t >= 1)
+            {
+                fade.Stop();
+                fade.Dispose();
+                form.Opacity = 1;
+                form.Location = target;
+            }
+        };
+        fade.Start();
+
+        if (keyDelayMs <= 0)
+        {
+            form.Activate();
+            onKeyboard?.Invoke();
+            return;
+        }
+        var arm = new WinFormsTimer { Interval = keyDelayMs };
+        arm.Tick += (_, _) =>
+        {
+            arm.Stop();
+            arm.Dispose();
+            if (form.IsDisposed || !form.Visible) return;
+            form.Activate();
+            onKeyboard?.Invoke();
+        };
+        arm.Start();
     }
 }
 
@@ -318,5 +394,46 @@ internal sealed class CardPanel : Panel
             using var pen = new Pen(CardBorder, BorderWidth);
             g.DrawPath(pen, path);
         }
+    }
+}
+
+/// <summary>Dark-themed drop-down. A WinForms ComboBox ignores BackColor unless it's
+/// owner-drawn, so both the closed box and the list are painted by hand. Shared by
+/// Postavke and the entry-edit window.</summary>
+internal static class Dark
+{
+    public static ComboBox Combo(
+        string[] items,
+        int selectedIndex,
+        Point location,
+        int width,
+        AnchorStyles anchor = AnchorStyles.Top | AnchorStyles.Left)
+    {
+        var combo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Palette.White.OverBlack(0.1),
+            ForeColor = Palette.White,
+            Font = Brand.Ui(9.5f),
+            DrawMode = DrawMode.OwnerDrawFixed,
+            Location = location,
+            Width = width,
+            Anchor = anchor,
+        };
+        combo.Items.AddRange(items.Cast<object>().ToArray());
+        combo.DrawItem += DrawComboItem;
+        if (selectedIndex >= 0 && selectedIndex < items.Length) combo.SelectedIndex = selectedIndex;
+        return combo;
+    }
+
+    private static void DrawComboItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox combo || e.Index < 0) return;
+        bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        using var back = new SolidBrush(selected ? Palette.Yellow.With(0.25) : Palette.White.OverBlack(0.1));
+        e.Graphics.FillRectangle(back, e.Bounds);
+        TextRenderer.DrawText(e.Graphics, combo.Items[e.Index]?.ToString() ?? "", combo.Font, e.Bounds, Palette.White,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
     }
 }

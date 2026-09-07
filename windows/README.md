@@ -5,7 +5,8 @@ vizualnom stilu (crna `#070707` + žuta `#FBDE07`). Ista funkcionalnost, isti JS
 podataka kao macOS verzija.
 
 Sjedi u system trayu (pored sata) i u zadanom intervalu (default 15 min) pita
-**"Na čemu radiš?"**. Odgovori se spremaju lokalno kao JSON, a na kraju dana dobiješ
+**"Na čemu radiš?"**. Odgovor **nije obavezan** — prompt se može preskočiti, pa taj period
+čeka u sljedećem promptu. Odgovori se spremaju lokalno kao JSON, a na kraju dana dobiješ
 grupirani pregled koji možeš kopirati ili exportati u CSV.
 
 ## Tehnologija
@@ -44,13 +45,44 @@ Isto kao macOS verzija:
 2. Svakih 15 min iskoči prompt, pre-fillan zadnjim unosom:
    - `Enter` — spremi
    - `↑` / `↓` — listanje povijesti
-   - `Esc` — spremi isto kao zadnji put (samo floating stil)
+   - `Esc` / *Preskoči* — ne bilježi ništa, period se vraća u sljedeći prompt
    - `✂` na traci blokova — razbij period na više unosa
    - *Odgodi 5 min* — snooze (samo floating stil)
-3. **Pauziraj** (15/30/60 min ili do nastavka) — vrijeme se bilježi kao pauza.
-4. **Završi dan** → pregled dana (grupirano/kronološki), *Kopiraj pregled* ili *Export CSV*.
+3. **Zapiši sada** — ručni prompt kad god treba (npr. kod prebacivanja na drugi projekt).
+4. **Pauziraj** (15/30/60 min ili do nastavka) — vrijeme se bilježi kao pauza.
+5. **Završi dan** → pregled dana (grupirano/kronološki), *Kopiraj pregled* ili *Export CSV*.
+
+Pop-upi se pojavljuju **s fade-inom**, a tipkovnicu preuzimaju ~0.9 s nakon toga — prompt koji
+iskoči dok pišeš u drugoj aplikaciji tako ne presretne ostatak rečenice (ni ne pregazi
+pre-fill). Do tada prozor stoji vidljiv, ali neaktivan (`ShowWithoutActivation`).
+
+### Preskakanje prompta
+
+Odgovor nije obavezan. *Preskoči* (ili `Esc`) ne bilježi ništa i **period se ne troši** — sam
+iskoči u sljedećem promptu, produžen za novi interval: preskočiš 10:00–10:15, a u 10:30 te
+prompt pita za 10:00–10:30 (i to se može razbiti na više unosa s `✂`). Isto vrijedi i za
+pojedini blok razbijenog perioda — ostavi ga praznog i vratit će se.
+
+Ako između preskočenog perioda i sljedećeg stane pauza (period nije više susjedan), preskočeno
+se nosi kao **zasebni red** iznad crte (`↩ 09:45–10:15`) — popuni ga kad znaš ili ostavi dalje.
+Zadnji prompt dana nosi i te redove; ono što se tamo preskoči više se ne bilježi.
+
+### Ručni prompt — "Zapiši sada"
+
+U popoveru iz traya, dok je tracking aktivan. Zapisuje period **od zadnjeg zapisa do sada**,
+bez čekanja na interval — za trenutak kad usred projekta A uskoči hitan zadatak na projektu B.
+
+Uz opis perioda ima i polje **„Nastavljam s”** (nije obavezno): taj tekst se ne bilježi kao
+unos, nego postaje **pre-fill sljedećeg prompta** — pa te redovni prompt u zakazano vrijeme
+pita za ostatak intervala već s opisom projekta B. Ritam promptanja se ne mijenja: sljedeći
+prompt iskoči u svoje vrijeme (10:15, 10:30…) kao i inače.
 
 ### Pregled dana
+
+Svaki red u tabu **Kronološki** ima `✎` — **Ispravi unos**: opis (uz padajući izbor iz
+povijesti), vrijeme *od*/*do* i vrsta (rad/pauza). Radi i za prijašnje dane. Kod spojenog reda
+(`2×`) promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan
+unos** — novi raspon nema stare granice blokova (prozor na to i upozori).
 
 U tabu **Kronološki** opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -109,6 +141,18 @@ kad se odgovori na zadnji prompt), pa unosi ostaju ispravni i kad se odgovori sl
 Ako je u tom trenutku aktivna odsutnost (idle/zaključan ekran), to razdoblje se bilježi kao
 pauza, a pita se samo za rad prije odsutnosti.
 
+#### Prompt koji je prenoćio
+
+Zatvoriš laptop bez odgovora na prompt i otvoriš ga **sutra**: dan se ne nastavlja od jučer.
+Čim se app probudi, period se **odreže na zadano vrijeme zaustavljanja** i dan se zatvara, pa
+zadnji prompt pita za taj skraćeni period (i to piše u njemu) — a odgovor završi kod jučerašnjeg
+datuma, s ispravnim vremenima. Produženja iz upozorenja (+15 / +30 / +45 / +1 h) se poštuju:
+rez je na produženom vremenu.
+
+Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se koristi vrijeme iz
+te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
+ponoć.
+
 ## Postavke
 
 Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -116,7 +160,7 @@ Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Postavka | Default |
 |---|---|
 | Interval promptanja | 15 min (5–60) |
-| Stil prompta | Floating panel / Cijeli ekran (obavezan odgovor) |
+| Stil prompta | Floating panel / Cijeli ekran (preko svega) |
 | Zvuk kod prompta | uključen |
 | Podsjetnik na početak radnog dana + vrijeme | uključeno, 8:30 (minute u koraku od 5) |
 | Ponudi i nadoknadu od tog vremena | uključeno |
@@ -156,8 +200,9 @@ windows/LloydsTracker/
 ├── TrackerEngine.cs          # stanje, 1s timer, prompt logika, idle/pauze, autostart
 ├── PromptForm.cs             # floating panel / fullscreen prompt + text polja
 ├── BlockBarControl.cs        # traka za razbijanje perioda + PromptGeometry
-├── SummaryForm.cs            # pregled dana, copy/CSV export, brisanje
+├── SummaryForm.cs            # pregled dana, copy/CSV export, ispravak/brisanje
 ├── SettingsForm.cs           # postavke
+├── EntryEditForm.cs          # prozor za ispravak unosa (Pregled dana → Kronološki)
 ├── StartupReminder.cs        # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.cs        # upozorenje 1 min prije auto-stopa + produženja
 ├── IdleMonitor.cs            # GetLastInputInfo
@@ -165,7 +210,7 @@ windows/LloydsTracker/
 ├── LaunchAtLogin.cs          # registry Run key
 ├── Store.cs                  # JSON pohrana (+ konverteri za macOS schema)
 ├── Models.cs                 # Entry, AppSettings, PromptRequest, grupiranje
-├── UiKit.cs                  # brand fontovi, FlatButton, TrackedLabel, CardPanel
+├── UiKit.cs                  # brand fontovi, FlatButton, TrackedLabel, CardPanel, PanelFade
 └── Theme.cs                  # Lloyds boje i hr-HR formatiranje
 ```
 
@@ -182,4 +227,8 @@ windows/LloydsTracker/
 | SF Symbols (clock/pause/moon) | GDI-crtane tray ikone po stanju |
 | `AppIcon.icns` + `.accessory`/`.regular` (Cmd+Tab) | `Form.Icon` (prozori su ionako u Alt+Tab) |
 | `NSSound("Glass")` | `SystemSounds.Asterisk` |
+| `PanelFade` (`NSAnimationContext` + odgođeni `makeKey`) | `PanelFade` (timer nad `Form.Opacity` + odgođeni `Activate()`) |
+| `.sheet` (ispravak unosa) | modalni `Form` (`ShowDialog`) |
+| SwiftUI `DatePicker(.hourAndMinute)` | dva dark drop-downa (sat + minuta) |
+| `.help(…)` tooltip | `ToolTip.SetToolTip` |
 ```

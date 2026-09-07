@@ -23,8 +23,7 @@ internal sealed class AutoStopWarningController
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
         form.FormClosed += (_, _) => { if (_form == form) _form = null; };
-        form.Show();
-        form.Activate();
+        form.Appear();
     }
 
     public void Close()
@@ -164,6 +163,12 @@ internal sealed class AutoStopWarningForm : Form
 
         UpdateCountdown();
     }
+
+    /// <summary>Pop-up ne uzima tipkovnicu odmah — vidi <see cref="PanelFade"/>.</summary>
+    protected override bool ShowWithoutActivation => true;
+
+    /// <summary>Sjedi u donjem kutu, pa se "diže" odozdo.</summary>
+    public void Appear() => PanelFade.Appear(this, slide: -10);
 
     internal static string ExtendLabel(int minutes) => minutes >= 60 ? "+1 h" : $"+{minutes} min";
 
