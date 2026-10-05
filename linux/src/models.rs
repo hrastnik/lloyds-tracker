@@ -141,6 +141,10 @@ pub struct AppSettings {
     pub prompt_style: PromptStyle,
     #[serde(default = "d_true")]
     pub show_startup_reminder: bool,
+    /// Subotom i nedjeljom ne iskače nijedan podsjetnik (ni u zadano vrijeme, ni kod
+    /// pokretanja aplikacije). Tracking se i vikendom može pokrenuti ručno.
+    #[serde(default = "d_true")]
+    pub skip_weekend_reminders: bool,
     #[serde(default = "d_true")]
     pub sound_enabled: bool,
     /// Podsjetnik nudi i start od početka radnog dana — otvaranje laptopa u 9:30 se
@@ -172,6 +176,7 @@ impl Default for AppSettings {
             merge_adjacent_entries: d_true(),
             prompt_style: d_prompt_style(),
             show_startup_reminder: d_true(),
+            skip_weekend_reminders: d_true(),
             sound_enabled: d_true(),
             workday_start_backfill_enabled: d_true(),
             workday_start_enabled: d_true(),

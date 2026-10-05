@@ -94,6 +94,7 @@ public sealed class TrackerEngine : IDisposable
     public void ShowStartupReminderIfNeeded()
     {
         if (!Settings.ShowStartupReminder || IsTracking || _prompt.IsVisible) return;
+        if (IsSkippedWeekend(DateTime.Now)) return;
         PresentStartReminder(DateTime.Now);
     }
 
@@ -459,6 +460,13 @@ public sealed class TrackerEngine : IDisposable
         return new DateTime(date.Year, date.Month, date.Day, hour, minute, 0, date.Kind);
     }
 
+    /// <summary>Saturday or Sunday with "Preskoči vikende" on — no reminder pops up then.
+    /// Fixed Sat/Sun on every port (macOS deliberately doesn't use the region-dependent
+    /// <c>isDateInWeekend</c>), so all three behave the same.</summary>
+    private bool IsSkippedWeekend(DateTime date)
+        => Settings.SkipWeekendReminders
+            && date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+
     /// <summary>The time the reminder offers to backfill from ("Start od 8:30") — null when the
     /// option is off, when the work day hasn't started yet, or when the gap is too small for the
     /// backfill to differ from starting now.</summary>
@@ -475,7 +483,7 @@ public sealed class TrackerEngine : IDisposable
     private void CheckWorkdayStart(DateTime now)
     {
         if (!Settings.WorkdayStartEnabled || IsTracking || _session.IsLocked) return;
-        if (_prompt.IsVisible) return;
+        if (_prompt.IsVisible || IsSkippedWeekend(now)) return;
         if (WorkdayStart(now) is not DateTime start || now < start) return;
 
         // An open reminder waits for an answer as long as it takes, so it may be from yesterday
@@ -825,11 +833,13 @@ public sealed class TrackerEngine : IDisposable
 
         if (old.WorkdayStartEnabled != Settings.WorkdayStartEnabled
             || old.WorkdayStartHour != Settings.WorkdayStartHour
-            || old.WorkdayStartMinute != Settings.WorkdayStartMinute)
+            || old.WorkdayStartMinute != Settings.WorkdayStartMinute
+            || old.SkipWeekendReminders != Settings.SkipWeekendReminders)
         {
             // The new time applies from the next start of the work day: if today's has already
             // passed, it stays quiet today — otherwise the pop-up would appear the moment an
-            // earlier hour gets dialled in the settings.
+            // earlier hour gets dialled in the settings (or "Preskoči vikende" is turned off on
+            // a weekend).
             var now = DateTime.Now;
             bool started = WorkdayStart(now) is DateTime start && now >= start;
             _workdayReminderDayKey = started ? Store.DayKey(now) : null;

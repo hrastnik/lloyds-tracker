@@ -167,6 +167,9 @@ impl TrackerEngine {
         if !self.settings.show_startup_reminder || self.is_tracking || self.prompt_visible {
             return;
         }
+        if self.is_skipped_weekend(Local::now()) {
+            return;
+        }
         self.present_start_reminder(Local::now());
     }
 
@@ -518,6 +521,14 @@ impl TrackerEngine {
         )
     }
 
+    /// Subota ili nedjelja uz uključeno "Preskoči vikende" — tad ne iskače nijedan
+    /// podsjetnik. Fiksno sub/ned na sva tri porta (macOS namjerno ne koristi
+    /// `isDateInWeekend`, koji ovisi o regiji).
+    fn is_skipped_weekend(&self, date: DateTime<Local>) -> bool {
+        self.settings.skip_weekend_reminders
+            && matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
+    }
+
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — None kad je opcija
     /// isključena, kad radni dan još nije počeo ili kad je razmak premali da bi se
     /// nadoknada uopće razlikovala od starta od sada.
@@ -534,6 +545,9 @@ impl TrackerEngine {
     /// uhvati prvi idući tick). Javlja se jednom dnevno.
     fn check_workday_start(&mut self, now: DateTime<Local>) {
         if !self.settings.workday_start_enabled || self.is_tracking || self.is_locked || self.prompt_visible {
+            return;
+        }
+        if self.is_skipped_weekend(now) {
             return;
         }
         let Some(start) = self.workday_start(now) else { return };
@@ -958,10 +972,11 @@ impl TrackerEngine {
         if old.workday_start_enabled != self.settings.workday_start_enabled
             || old.workday_start_hour != self.settings.workday_start_hour
             || old.workday_start_minute != self.settings.workday_start_minute
+            || old.skip_weekend_reminders != self.settings.skip_weekend_reminders
         {
             // Novo vrijeme vrijedi od idućeg početka radnog dana: ako je današnji već
             // prošao, danas se više ne javlja — inače bi pop-up iskočio čim se u
-            // postavkama namjesti raniji sat.
+            // postavkama namjesti raniji sat (ili vikendom isključi "Preskoči vikende").
             let now = Local::now();
             let started = self.workday_start(now).map(|s| now >= s).unwrap_or(false);
             self.workday_reminder_day_key = started.then(|| Store::day_key(now));

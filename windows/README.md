@@ -101,6 +101,9 @@ Podsjetnik da se pokrene tracking javlja se na dva načina:
   gasi tako više ne ostane bez podsjetnika. Javlja se jednom dnevno; *Kasnije* ga zatvara
   do sutra, a pokretanje dana iz popovera ga također preskače.
 
+**Vikendom** (subota i nedjelja) se ne javlja nijedan od njih — opcija *Preskoči vikende*,
+default uključena. Tracking se i vikendom može pokrenuti ručno iz popovera.
+
 Uz uključenu **nadoknadu** (default) pop-up nudi izbor kad je radni dan već počeo: *Start od
 8:30* ili *Počni tek od sada*. Nadoknada samo pomiče početak trackanja unatrag — prvi prompt
 onda pita za cijelo jutro (8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
@@ -164,6 +167,7 @@ Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Zvuk kod prompta | uključen |
 | Podsjetnik na početak radnog dana + vrijeme | uključeno, 8:30 (minute u koraku od 5) |
 | Ponudi i nadoknadu od tog vremena | uključeno |
+| Preskoči vikende (bez podsjetnika subotom i nedjeljom) | uključeno |
 | Automatsko zaustavljanje + vrijeme | uključeno, 16:00 (minute u koraku od 5) |
 | Detekcija neaktivnosti (tipkovnica/miš) + prag | isključena, 5 min |
 | Bilježi pauzu kad je ekran zaključan | isključeno |

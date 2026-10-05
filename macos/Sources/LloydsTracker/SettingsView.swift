@@ -7,8 +7,16 @@ struct SettingsView: View {
     @ObservedObject var engine: TrackerEngine
 
     /// Visina odabrana da najviši tab ("Radni dan") stane bez scrollanja — izmjereno
-    /// `NSHostingView.fittingSize`-om tog taba (754), plus par piksela zraka.
-    private let contentHeight: CGFloat = 756
+    /// `NSHostingView.fittingSize`-om tog taba (821), plus par piksela zraka.
+    private let contentHeight: CGFloat = 823
+
+    /// Na manjem ekranu (npr. 13" s dockom dolje) prozor ne smije ispasti ispod ruba —
+    /// visina se ograniči na vidljivi dio ekrana minus naslovna traka s tabovima, a tab
+    /// onda scrolla. Isto radi i Windows `SettingsForm` (`WorkingArea.Height`).
+    private var fittedHeight: CGFloat {
+        guard let visible = NSScreen.main?.visibleFrame.height else { return contentHeight }
+        return max(400, min(contentHeight, visible - 100))
+    }
 
     var body: some View {
         TabView {
@@ -19,7 +27,7 @@ struct SettingsView: View {
             systemTab
                 .tabItem { Label("Sustav", systemImage: "gearshape") }
         }
-        .frame(width: 480, height: contentHeight)
+        .frame(width: 480, height: fittedHeight)
         .tint(Color.lloydsYellow)
     }
 
@@ -63,6 +71,12 @@ struct SettingsView: View {
                 Toggle("Ponudi i nadoknadu od tog vremena", isOn: $engine.settings.workdayStartBackfillEnabled)
                     .disabled(!engine.settings.workdayStartEnabled)
                 caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prvi prompt pita što si radio od \(workdayStartClock) do sada — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample). Uz njega ostaje i „Počni tek od sada”. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
+                // Opis kao podnaslov u istom retku (a ne zaseban `caption`) — tab je ionako
+                // najviši, pa svaki red više diže visinu prozora.
+                Toggle(isOn: $engine.settings.skipWeekendReminders) {
+                    Text("Preskoči vikende")
+                    Text("Subotom i nedjeljom nema podsjetnika u zadano vrijeme ni kod pokretanja aplikacije.")
+                }
             }
 
             Section("Automatsko zaustavljanje") {

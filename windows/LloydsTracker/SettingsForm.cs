@@ -161,6 +161,11 @@ internal sealed class SettingsForm : Form
         _workdayBackfill.Enabled = _engine.Settings.WorkdayStartEnabled;
 
         _workdayBackfillCaption = Caption(WorkdayBackfillCaption());
+        Gap(6);
+
+        Toggle("Preskoči vikende", _engine.Settings.SkipWeekendReminders,
+            v => _engine.MutateSettings(s => s.SkipWeekendReminders = v));
+        Caption("Subotom i nedjeljom nema podsjetnika u zadano vrijeme ni kod pokretanja aplikacije.");
         Gap(8);
     }
 

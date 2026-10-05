@@ -16,6 +16,7 @@ vrijeme zaustavljanja.
 Ujutro te sam podsjeti: u zadano vrijeme početka radnog dana (default **8:30**) iskoči
 pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvoriš tek u 9:30,
 nudi i **start od 8:30**, pa se jutro nadoknadi.
+Vikendom šuti (može se isključiti).
 
 Tri nativne verzije, isti JSON format podataka:
 

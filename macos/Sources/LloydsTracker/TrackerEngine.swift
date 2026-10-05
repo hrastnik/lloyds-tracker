@@ -87,7 +87,8 @@ final class TrackerEngine: ObservableObject {
     /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama i
     /// dan još nije pokrenut (da se ne zaboravi startati tracking).
     func showStartupReminderIfNeeded() {
-        guard settings.showStartupReminder, !isTracking, !prompt.isVisible else { return }
+        guard settings.showStartupReminder, !isTracking, !prompt.isVisible,
+              !isSkippedWeekend(Date()) else { return }
         presentStartReminder(now: Date())
     }
 
@@ -433,6 +434,15 @@ final class TrackerEngine: ObservableObject {
         )
     }
 
+    /// Subota ili nedjelja uz uključeno "Preskoči vikende" — tad ne iskače nijedan
+    /// podsjetnik. Namjerno fiksno sub/ned, a ne `isDateInWeekend` (ovisi o regiji), da se
+    /// sva tri porta ponašaju isto.
+    private func isSkippedWeekend(_ date: Date) -> Bool {
+        guard settings.skipWeekendReminders else { return false }
+        let weekday = Calendar.current.component(.weekday, from: date) // 1 = nedjelja, 7 = subota
+        return weekday == 1 || weekday == 7
+    }
+
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — nil kad je opcija
     /// isključena, kad radni dan još nije počeo ili kad je razmak premali da bi se
     /// nadoknada uopće razlikovala od starta od sada.
@@ -448,6 +458,7 @@ final class TrackerEngine: ObservableObject {
     /// uhvati prvi idući tick). Javlja se jednom dnevno.
     private func checkWorkdayStart(now: Date) {
         guard settings.workdayStartEnabled, !isTracking, !isLocked, !prompt.isVisible,
+              !isSkippedWeekend(now),
               let start = workdayStart(on: now), now >= start else { return }
 
         // Otvoreni podsjetnik čeka odgovor koliko treba, pa može biti od jučer (prenoćio)
@@ -751,10 +762,11 @@ final class TrackerEngine: ObservableObject {
         }
         if old.workdayStartEnabled != settings.workdayStartEnabled
             || old.workdayStartHour != settings.workdayStartHour
-            || old.workdayStartMinute != settings.workdayStartMinute {
+            || old.workdayStartMinute != settings.workdayStartMinute
+            || old.skipWeekendReminders != settings.skipWeekendReminders {
             // Novo vrijeme vrijedi od idućeg početka radnog dana: ako je današnji već
             // prošao, danas se više ne javlja — inače bi pop-up iskočio čim se u
-            // postavkama namjesti raniji sat.
+            // postavkama namjesti raniji sat (ili vikendom isključi "Preskoči vikende").
             let now = Date()
             let started = workdayStart(on: now).map { now >= $0 } ?? false
             workdayReminderDayKey = started ? Store.dayKey(now) : nil

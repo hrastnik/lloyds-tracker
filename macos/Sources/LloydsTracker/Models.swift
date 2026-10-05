@@ -58,6 +58,9 @@ struct AppSettings: Codable, Equatable {
     /// Podsjetnik nudi i start od početka radnog dana — otvaranje laptopa u 9:30 se
     /// tako može upisati kao rad od 8:30 (jutro se nadoknadi).
     var workdayStartBackfillEnabled: Bool = true
+    /// Subotom i nedjeljom ne iskače nijedan podsjetnik (ni u zadano vrijeme, ni kod
+    /// pokretanja aplikacije). Tracking se i vikendom može pokrenuti ručno.
+    var skipWeekendReminders: Bool = true
 
     init() {}
 
@@ -83,6 +86,7 @@ struct AppSettings: Codable, Equatable {
         workdayStartHour = try c.decodeIfPresent(Int.self, forKey: .workdayStartHour) ?? d.workdayStartHour
         workdayStartMinute = try c.decodeIfPresent(Int.self, forKey: .workdayStartMinute) ?? d.workdayStartMinute
         workdayStartBackfillEnabled = try c.decodeIfPresent(Bool.self, forKey: .workdayStartBackfillEnabled) ?? d.workdayStartBackfillEnabled
+        skipWeekendReminders = try c.decodeIfPresent(Bool.self, forKey: .skipWeekendReminders) ?? d.skipWeekendReminders
     }
 }
 

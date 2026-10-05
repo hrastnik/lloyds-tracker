@@ -38,6 +38,7 @@ pub struct SettingsWindow {
     workday_hour: SpinButton,
     workday_minute: SpinButton,
     workday_backfill: Switch,
+    skip_weekends: Switch,
     workday_caption: Label,
     backfill_caption: Label,
 
@@ -85,6 +86,7 @@ impl SettingsWindow {
             workday_hour: ui::spin(0.0, 23.0),
             workday_minute: ui::spin(0.0, 59.0),
             workday_backfill: Switch::new(),
+            skip_weekends: Switch::new(),
             workday_caption: ui::wrapped("", &["caption"], 58),
             backfill_caption: ui::wrapped("", &["caption"], 58),
 
@@ -110,6 +112,7 @@ impl SettingsWindow {
         me.workday_hour.set_value(s.workday_start_hour as f64);
         me.workday_minute.set_value(s.workday_start_minute as f64);
         me.workday_backfill.set_active(s.workday_start_backfill_enabled);
+        me.skip_weekends.set_active(s.skip_weekend_reminders);
         me.auto_stop_enabled.set_active(s.auto_stop_enabled);
         me.auto_stop_hour.set_value(s.auto_stop_hour as f64);
         me.auto_stop_minute.set_value(s.auto_stop_minute as f64);
@@ -172,6 +175,12 @@ impl SettingsWindow {
         start.append(&row("Vrijeme", &ui::time_box(&self.workday_hour, &self.workday_minute)));
         start.append(&row("Ponudi i nadoknadu od tog vremena", &self.workday_backfill));
         start.append(&self.backfill_caption);
+        start.append(&row("Preskoči vikende", &self.skip_weekends));
+        start.append(&ui::wrapped(
+            "Subotom i nedjeljom nema podsjetnika u zadano vrijeme ni kod pokretanja aplikacije.",
+            &["caption"],
+            58,
+        ));
         page.append(&start);
 
         let auto_stop = section("AUTOMATSKO ZAUSTAVLJANJE");
@@ -265,6 +274,7 @@ impl SettingsWindow {
             sound,
             workday_enabled,
             workday_backfill,
+            skip_weekends,
             auto_stop_enabled,
             idle_enabled,
             lock_pause,
@@ -293,6 +303,7 @@ impl SettingsWindow {
             merge_adjacent_entries: self.app.engine.borrow().settings.merge_adjacent_entries,
             prompt_style: PROMPT_STYLES[self.prompt_style.selected() as usize],
             show_startup_reminder: self.startup_reminder.is_active(),
+            skip_weekend_reminders: self.skip_weekends.is_active(),
             sound_enabled: self.sound.is_active(),
             workday_start_backfill_enabled: self.workday_backfill.is_active(),
             workday_start_enabled: self.workday_enabled.is_active(),

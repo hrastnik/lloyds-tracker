@@ -103,6 +103,11 @@ public sealed class AppSettings
     [JsonPropertyName("showStartupReminder")]
     public bool ShowStartupReminder { get; set; } = true;
 
+    /// <summary>No reminder pops up on Saturday or Sunday (neither at the set time nor at app
+    /// launch). Tracking can still be started manually on the weekend.</summary>
+    [JsonPropertyName("skipWeekendReminders")]
+    public bool SkipWeekendReminders { get; set; } = true;
+
     [JsonPropertyName("soundEnabled")]
     public bool SoundEnabled { get; set; } = true;
 
