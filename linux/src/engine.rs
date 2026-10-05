@@ -10,9 +10,16 @@ use crate::models::{
 use crate::session::SessionMonitor;
 use crate::store::Store;
 use crate::theme::Fmt;
+use crate::update::{AvailableUpdate, UpdateChecker};
 
 /// Koliko prije automatskog zaustavljanja iskoči upozorenje.
 const AUTO_STOP_LEAD: f64 = 60.0;
+
+/// Prva provjera nove verzije malo nakon pokretanja (da se app slegne), dalje jednom
+/// dnevno; nakon neuspjele (nema mreže) opet za sat.
+const UPDATE_FIRST_CHECK_DELAY: i64 = 15;
+const UPDATE_CHECK_INTERVAL: i64 = 24 * 3600;
+const UPDATE_RETRY_INTERVAL: i64 = 3600;
 
 /// Stanje ikone u traci — pandan macOS SF Symbolima (`clock` / `clock.fill` /
 /// `pause.circle.fill` / `moon.zzz.fill`) i Windows `TrayState`.
@@ -57,6 +64,16 @@ pub enum Effect {
         lead: f64,
     },
     CloseAutoStopWarning,
+    /// Pitaj GitHub za zadnji release (na pomoćnom threadu) i rezultat vrati u
+    /// [`TrackerEngine::on_update_checked`].
+    CheckForUpdate,
+    ShowUpdatePopup {
+        update: AvailableUpdate,
+        current_version: String,
+    },
+    CloseUpdatePopup,
+    /// Release stranica nove verzije u pregledniku.
+    OpenUpdatePage(String),
     OpenSummary,
     PlaySound,
 }
@@ -75,6 +92,10 @@ pub struct TrackerEngine {
     pub auto_stop_at: Option<DateTime<Local>>,
     pub settings: AppSettings,
     pub current_day_key: String,
+    /// Novija verzija na GitHubu (None = nema je ili provjera nije rađena).
+    pub available_update: Option<AvailableUpdate>,
+    /// Ishod zadnje provjere nove verzije, za prikaz u postavkama.
+    pub update_status: Option<String>,
 
     // MARK: Interno
     last_covered: DateTime<Local>,
@@ -95,6 +116,10 @@ pub struct TrackerEngine {
     /// je dan u međuvremenu pokrenut. Drži se u memoriji: kod restarta aplikacije ulogu
     /// ionako preuzima podsjetnik kod pokretanja.
     workday_reminder_day_key: Option<String>,
+    next_update_check_at: DateTime<Local>,
+    update_check_in_flight: bool,
+    /// Nova verzija čiji pop-up čeka da se makne prompt/podsjetnik.
+    pending_update_popup: Option<AvailableUpdate>,
 
     // MARK: Zrcalo stanja prozora (engine mora znati je li što otvoreno)
     prompt_visible: bool,
@@ -103,6 +128,7 @@ pub struct TrackerEngine {
     /// otvoreni prozor u međuvremenu zastario (prenoćio, ili je radni dan tek počeo).
     reminder_shown_at: Option<DateTime<Local>>,
     reminder_backfill_from: Option<DateTime<Local>>,
+    auto_stop_warning_visible: bool,
 
     effects: Vec<Effect>,
 }
@@ -133,6 +159,8 @@ impl TrackerEngine {
             auto_stop_at: None,
             settings,
             current_day_key,
+            available_update: None,
+            update_status: None,
             last_covered: now,
             active_prompt_end: None,
             carried_spans: Vec::new(),
@@ -142,10 +170,14 @@ impl TrackerEngine {
             locked_at: None,
             auto_stop_warning_shown: false,
             workday_reminder_day_key: None,
+            next_update_check_at: now + Duration::seconds(UPDATE_FIRST_CHECK_DELAY),
+            update_check_in_flight: false,
+            pending_update_popup: None,
             prompt_visible: false,
             reminder_visible: false,
             reminder_shown_at: None,
             reminder_backfill_from: None,
+            auto_stop_warning_visible: false,
             effects: Vec::new(),
         }
     }
@@ -452,6 +484,11 @@ impl TrackerEngine {
     fn cancel_auto_stop(&mut self) {
         self.auto_stop_at = None;
         self.auto_stop_warning_shown = false;
+        self.close_auto_stop_warning();
+    }
+
+    fn close_auto_stop_warning(&mut self) {
+        self.auto_stop_warning_visible = false;
         self.effects.push(Effect::CloseAutoStopWarning);
     }
 
@@ -459,7 +496,7 @@ impl TrackerEngine {
     /// Postavka se ne mijenja, pa sutra opet vrijedi zadano vrijeme.
     pub fn extend_auto_stop(&mut self, minutes: i64) {
         let Some(current) = self.auto_stop_at else { return };
-        self.effects.push(Effect::CloseAutoStopWarning);
+        self.close_auto_stop_warning();
         self.auto_stop_warning_shown = false;
         self.auto_stop_at = Some(current.max(Local::now()) + Duration::minutes(minutes));
     }
@@ -501,6 +538,8 @@ impl TrackerEngine {
 
     fn show_auto_stop_warning(&mut self, stop_at: DateTime<Local>) {
         self.auto_stop_warning_shown = true;
+        self.auto_stop_warning_visible = true;
+        self.effects.push(Effect::CloseUpdatePopup);
         if self.settings.sound_enabled {
             self.effects.push(Effect::PlaySound);
         }
@@ -598,6 +637,7 @@ impl TrackerEngine {
             }
         }
         let backfill_from = self.backfill_start(now);
+        self.effects.push(Effect::CloseUpdatePopup);
         self.reminder_visible = true;
         self.reminder_shown_at = Some(Local::now());
         self.reminder_backfill_from = backfill_from;
@@ -627,6 +667,96 @@ impl TrackerEngine {
 
     pub fn on_auto_stop_warning_dismissed(&mut self) {
         self.auto_stop_warning_shown = true;
+        self.auto_stop_warning_visible = false;
+    }
+
+    // MARK: - Nova verzija
+
+    fn check_for_update_if_due(&mut self, now: DateTime<Local>) {
+        if !self.settings.update_check_enabled || self.update_check_in_flight || now < self.next_update_check_at {
+            return;
+        }
+        self.check_for_update();
+    }
+
+    /// Pita GitHub za zadnji release — iz tick petlje i ručno ("Provjeri sada" u
+    /// postavkama). Sam zahtjev ide na pomoćni thread (`Effect::CheckForUpdate`), a
+    /// rezultat stiže u `on_update_checked`.
+    pub fn check_for_update(&mut self) {
+        if self.update_check_in_flight {
+            return;
+        }
+        self.update_check_in_flight = true;
+        self.update_status = Some("Provjeravam…".into());
+        self.effects.push(Effect::CheckForUpdate);
+    }
+
+    pub fn on_update_checked(&mut self, result: Result<AvailableUpdate, String>) {
+        self.update_check_in_flight = false;
+        let now = Local::now();
+        match result {
+            Ok(latest) => {
+                self.next_update_check_at = now + Duration::seconds(UPDATE_CHECK_INTERVAL);
+                self.handle_latest(latest);
+            }
+            Err(_) => {
+                self.next_update_check_at = now + Duration::seconds(UPDATE_RETRY_INTERVAL);
+                // Provjera je isključena dok je zahtjev bio u tijeku — status ostaje prazan.
+                if self.settings.update_check_enabled {
+                    self.update_status =
+                        Some("Provjera nije uspjela (nema mreže?). Pokušat ću opet za sat.".into());
+                }
+            }
+        }
+    }
+
+    fn handle_latest(&mut self, latest: AvailableUpdate) {
+        // Provjera je isključena dok je zahtjev bio u tijeku.
+        if !self.settings.update_check_enabled {
+            return;
+        }
+        if !UpdateChecker::is_newer(&latest.version, UpdateChecker::current_version()) {
+            self.available_update = None;
+            self.update_status = Some("Imaš najnoviju verziju.".into());
+            return;
+        }
+        self.update_status = Some(format!("Dostupna je verzija {}.", latest.version));
+        if self.settings.update_notified_version != latest.version {
+            self.pending_update_popup = Some(latest.clone());
+        }
+        self.available_update = Some(latest);
+        self.show_pending_update_popup();
+    }
+
+    /// Pop-up se ne gura preko prompta, podsjetnika ni upozorenja, a ni na zaključan
+    /// ekran — čeka da se maknu, tick ga onda pokuša opet.
+    fn show_pending_update_popup(&mut self) {
+        if self.pending_update_popup.is_none()
+            || self.is_locked
+            || self.prompt_visible
+            || self.reminder_visible
+            || self.auto_stop_warning_visible
+        {
+            return;
+        }
+        let Some(update) = self.pending_update_popup.take() else { return };
+        // Javlja se jednom po verziji — pamti se odmah, i kad se pop-up samo zatvori.
+        self.settings.update_notified_version = update.version.clone();
+        Store::save_settings(&self.settings);
+        self.effects.push(Effect::ShowUpdatePopup {
+            update,
+            current_version: UpdateChecker::current_version().to_string(),
+        });
+    }
+
+    /// Release stranica nove verzije (iz menija u traci i iz pop-upa).
+    pub fn open_update_page(&mut self) {
+        let url = self
+            .available_update
+            .as_ref()
+            .map(|u| u.url.clone())
+            .unwrap_or_else(|| UpdateChecker::LATEST_RELEASE_PAGE.to_string());
+        self.effects.push(Effect::OpenUpdatePage(url));
     }
 
     // MARK: - Tick petlja
@@ -643,6 +773,8 @@ impl TrackerEngine {
         self.is_locked = locked;
 
         self.check_workday_start(now);
+        self.check_for_update_if_due(now);
+        self.show_pending_update_popup();
         // Dan je zatvoren, a zadnji prompt čeka odgovor — više se ništa ne zakazuje.
         if !self.is_tracking || self.awaiting_final_answer {
             return;
@@ -798,6 +930,8 @@ impl TrackerEngine {
         if self.settings.sound_enabled {
             self.effects.push(Effect::PlaySound);
         }
+        // Isti kut ekrana — prompt ima prednost, obavijest o verziji ostaje u meniju.
+        self.effects.push(Effect::CloseUpdatePopup);
         self.prompt_visible = true;
         self.effects.push(Effect::ShowPrompt {
             request,
@@ -965,9 +1099,19 @@ impl TrackerEngine {
             || old.auto_stop_hour != self.settings.auto_stop_hour
             || old.auto_stop_minute != self.settings.auto_stop_minute
         {
-            self.effects.push(Effect::CloseAutoStopWarning);
+            self.close_auto_stop_warning();
             self.auto_stop_warning_shown = false;
             self.auto_stop_at = if self.is_tracking { self.next_auto_stop(Local::now()) } else { None };
+        }
+        if old.update_check_enabled != self.settings.update_check_enabled {
+            if self.settings.update_check_enabled {
+                self.next_update_check_at = Local::now();
+            } else {
+                self.available_update = None;
+                self.pending_update_popup = None;
+                self.update_status = None;
+                self.effects.push(Effect::CloseUpdatePopup);
+            }
         }
         if old.workday_start_enabled != self.settings.workday_start_enabled
             || old.workday_start_hour != self.settings.workday_start_hour

@@ -15,6 +15,8 @@ mod summary;
 mod theme;
 mod tray;
 mod ui;
+mod update;
+mod update_popup;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,6 +36,8 @@ use crate::settings_window::SettingsWindow;
 use crate::startup_reminder::StartupReminder;
 use crate::summary::SummaryWindow;
 use crate::tray::{LloydsTray, TrayCommand, TraySnapshot};
+use crate::update::UpdateChecker;
+use crate::update_popup::UpdatePopup;
 
 const APP_ID: &str = "com.lloydsdigital.LloydsTracker";
 
@@ -50,6 +54,7 @@ pub struct App {
     prompt: RefCell<Option<Rc<PromptWindow>>>,
     reminder: RefCell<Option<Rc<StartupReminder>>>,
     auto_stop: RefCell<Option<Rc<AutoStopWarning>>>,
+    update_popup: RefCell<Option<Rc<UpdatePopup>>>,
     summary: RefCell<Option<Rc<SummaryWindow>>>,
     settings: RefCell<Option<Rc<SettingsWindow>>>,
 }
@@ -64,6 +69,7 @@ impl App {
             prompt: RefCell::new(None),
             reminder: RefCell::new(None),
             auto_stop: RefCell::new(None),
+            update_popup: RefCell::new(None),
             summary: RefCell::new(None),
             settings: RefCell::new(None),
         })
@@ -193,9 +199,47 @@ impl App {
                     window.close();
                 }
             }
+            Effect::CheckForUpdate => self.check_for_update(),
+            Effect::ShowUpdatePopup { update, current_version } => {
+                if let Some(old) = self.update_popup.borrow_mut().take() {
+                    old.close();
+                }
+                let me = self.clone();
+                let on_download = move || me.clone().mutate(|engine| engine.open_update_page());
+                let window = UpdatePopup::new(&self.gtk, &update, &current_version, on_download);
+                *self.update_popup.borrow_mut() = Some(window);
+            }
+            Effect::CloseUpdatePopup => {
+                if let Some(window) = self.update_popup.borrow_mut().take() {
+                    window.close();
+                }
+            }
+            Effect::OpenUpdatePage(url) => UpdateChecker::open_page(&url),
             Effect::OpenSummary => self.open_summary(),
             Effect::PlaySound => sound::play_prompt_sound(),
         }
+    }
+
+    // MARK: - Nova verzija
+
+    /// HTTP zahtjev blokira (do 15 s), pa ide na zaseban thread; rezultat se kanalom vraća
+    /// na GTK thread (kao naredbe iz trake) i ulazi u engine kroz `mutate`.
+    fn check_for_update(self: &Rc<Self>) {
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let _ = tx.send_blocking(UpdateChecker::fetch_latest());
+        });
+        let app = self.clone();
+        glib::spawn_future_local(async move {
+            let result = rx
+                .recv()
+                .await
+                .unwrap_or_else(|_| Err("thread za provjeru je pao".into()));
+            if let Err(error) = &result {
+                eprintln!("Provjera nove verzije nije uspjela: {error}");
+            }
+            app.mutate(move |engine| engine.on_update_checked(result));
+        });
     }
 
     // MARK: - Prozori
@@ -229,7 +273,10 @@ impl App {
         }
         let settings = self.settings.borrow().clone();
         if let Some(window) = settings {
-            if !window.window().is_visible() {
+            if window.window().is_visible() {
+                // Ishod provjere nove verzije stiže asinkrono, pa ga postavke prate.
+                window.refresh_update_status();
+            } else {
                 *self.settings.borrow_mut() = None;
             }
         }
@@ -259,6 +306,7 @@ impl App {
             TrayCommand::Stop => self.clone().mutate(|engine| engine.stop()),
             TrayCommand::OpenSummary => self.open_summary(),
             TrayCommand::OpenSettings => self.open_settings(),
+            TrayCommand::OpenUpdatePage => self.clone().mutate(|engine| engine.open_update_page()),
             TrayCommand::Quit => self.gtk.quit(),
         }
     }

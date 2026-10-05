@@ -15,7 +15,12 @@ cp -r dist/LloydsTracker.app /Applications/ # instalacija
 open /Applications/LloydsTracker.app
 ```
 
-Za razvoj: `swift run` (radi i bez .app bundle-a, ali "launch at login" tada nije dostupan).
+Gotov build (Apple Silicon) je i uz svaki [release](https://github.com/hrastnik/lloyds-tracker/releases/latest)
+kao `LloydsTracker-macOS-arm64.zip` — vidi [root README](../README.md#preuzimanje) za prvo
+otvaranje nepotpisane aplikacije.
+
+Za razvoj: `swift run` (radi i bez .app bundle-a, ali "launch at login" i provjera nove
+verzije tada nisu dostupni — verzija se čita iz Info.plista).
 
 Zahtjevi: macOS 14+, Xcode toolchain (Swift 6).
 
@@ -143,6 +148,20 @@ Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se kor
 te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
 ponoć.
 
+### Nova verzija
+
+Jednom dnevno (prvi put ~15 s nakon pokretanja) aplikacija pita GitHub za zadnji release i
+usporedi ga sa svojom verzijom. Ako je izašla novija:
+
+- jednom po verziji iskoči **pop-up** (*Preuzmi* / *Kasnije*) u gornjem desnom kutu — ne
+  gura se preko prompta, podsjetnika ni upozorenja, nego pričeka da se maknu;
+- na vrhu menija stoji žuta traka **Nova verzija X · Preuzmi** dok se ne instalira novija.
+
+Oboje otvara release stranicu; ništa se ne skida ni ne instalira samo. Bez mreže se provjera
+ponovi za sat. U *Postavke → Sustav* je trenutna verzija, prekidač *Provjeravaj nove
+verzije* i gumb *Provjeri sada*. Koja je verzija već javljena pop-upom pamti se u
+`settings.json` (`updateNotifiedVersion`).
+
 ## Postavke
 
 Status bar ikona → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -160,6 +179,8 @@ Status bar ikona → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, 
 | Bilježi pauzu kad je ekran zaključan | isključeno |
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave | isključeno (zahtijeva .app u /Applications) |
+| Podsjetnik kod pokretanja (pop-up) | uključeno |
+| Provjeravaj nove verzije | uključeno |
 | Spoji susjedne unose istog naziva (toggle u *Pregled dana → Kronološki*) | uključeno |
 
 ## Podaci
@@ -189,6 +210,8 @@ Sources/LloydsTracker/
 ├── EntryEditView.swift    # sheet za ispravak unosa (Pregled dana → Kronološki)
 ├── StartupReminder.swift  # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.swift  # upozorenje 1 min prije auto-stopa + produženja
+├── UpdateChecker.swift    # provjera nove verzije (GitHub releases/latest)
+├── UpdatePopup.swift      # pop-up "Nova verzija" (jednom po verziji)
 ├── AppIcon.swift          # brand ikona (Dock/Cmd+Tab + izvor za AppIcon.icns)
 ├── Store.swift            # JSON pohrana
 ├── IdleMonitor.swift      # detekcija neaktivnosti (CGEventSource)

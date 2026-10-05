@@ -114,6 +114,21 @@ struct SettingsView: View {
                 caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.")
             }
 
+            Section("Nova verzija") {
+                LabeledContent("Trenutna verzija", value: UpdateChecker.currentVersion ?? "nepoznata")
+                Toggle("Provjeravaj nove verzije", isOn: $engine.settings.updateCheckEnabled)
+                caption("Jednom dnevno provjeri na GitHubu je li izašla nova verzija. Ako je, javi se jednom pop-upom, a poveznica za preuzimanje ostaje u meniju. Ništa se ne instalira samo.")
+                HStack {
+                    Button("Provjeri sada") { engine.checkForUpdate() }
+                        .disabled(!engine.settings.updateCheckEnabled)
+                    if let status = engine.updateStatus {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section("Podaci") {
                 LabeledContent("Lokacija") {
                     Text(Store.directory.path)

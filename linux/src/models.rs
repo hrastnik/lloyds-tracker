@@ -105,6 +105,7 @@ fn d_auto_stop_hour() -> u32 { 16 }
 fn d_zero() -> u32 { 0 }
 fn d_workday_hour() -> u32 { 8 }
 fn d_workday_minute() -> u32 { 30 }
+fn d_empty() -> String { String::new() }
 
 /// Polja abecedno — vidi komentar na `Entry`. Ključevi u JSON-u su camelCase
 /// (`autoStopEnabled`), isti kao na macOS i Windows portu.
@@ -147,6 +148,13 @@ pub struct AppSettings {
     pub skip_weekend_reminders: bool,
     #[serde(default = "d_true")]
     pub sound_enabled: bool,
+    /// Jednom dnevno provjeri na GitHubu postoji li nova verzija (samo javlja, ne instalira).
+    #[serde(default = "d_true")]
+    pub update_check_enabled: bool,
+    /// Verzija za koju je pop-up o novoj verziji već prikazan — javlja se jednom po verziji,
+    /// a dalje samo u meniju.
+    #[serde(default = "d_empty")]
+    pub update_notified_version: String,
     /// Podsjetnik nudi i start od početka radnog dana — otvaranje laptopa u 9:30 se
     /// tako može upisati kao rad od 8:30 (jutro se nadoknadi).
     #[serde(default = "d_true")]
@@ -178,6 +186,8 @@ impl Default for AppSettings {
             show_startup_reminder: d_true(),
             skip_weekend_reminders: d_true(),
             sound_enabled: d_true(),
+            update_check_enabled: d_true(),
+            update_notified_version: d_empty(),
             workday_start_backfill_enabled: d_true(),
             workday_start_enabled: d_true(),
             workday_start_hour: d_workday_hour(),

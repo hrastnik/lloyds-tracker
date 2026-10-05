@@ -18,6 +18,8 @@ kopirati ili exportati u CSV.
   ikona ide preko [StatusNotifierItem](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/)
   spec-a (KDE/freedesktop). Meni crta desktop (host), a ne aplikacija.
 - **DBus (`zbus`)** za detekciju neaktivnosti i zaključanog ekrana.
+- **HTTP: `ureq` + rustls** samo za provjeru nove verzije (GitHub API); TLS je čisti Rust,
+  pa nema ovisnosti o sistemskom OpenSSL-u.
 
 ### Preduvjeti za pokretanje
 
@@ -173,6 +175,18 @@ Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se kor
 te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
 ponoć.
 
+### Nova verzija
+
+Jednom dnevno (prvi put ~15 s nakon pokretanja) aplikacija pita GitHub za zadnji release
+(`api.github.com/repos/hrastnik/lloyds-tracker/releases/latest`). Ako je objavljena novija
+verzija od pokrenute, javi se **jednom po verziji** pop-upom (*Preuzmi* / *Kasnije*), a na vrhu
+menija u traci ostaje stavka `Nova verzija X · Preuzmi` koja otvara release stranicu u
+pregledniku. Aplikacija **ništa ne skida ni ne instalira sama**: novi `.tar.gz` se preuzme i
+instalira ručno (`install.sh`). Pop-up ne iskače preko prompta, podsjetnika ni upozorenja
+(čeka da se maknu) ni na zaključan ekran. Ako provjera ne uspije (nema mreže), ponavlja se za
+sat. Isključuje se u *Postavke → Sustav → Provjeravaj nove verzije*; tamo je i trenutna
+verzija i gumb *Provjeri sada*.
+
 ## Postavke
 
 Traka → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -191,6 +205,7 @@ Traka → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave (autostart) | isključeno |
 | Podsjetnik kod pokretanja (pop-up) | uključeno |
+| Provjeravaj nove verzije (GitHub, jednom dnevno) | uključeno |
 | Spoji susjedne unose istog naziva (toggle u *Pregled dana → Kronološki*) | uključeno |
 
 **Pokreni kod prijave** piše/briše `~/.config/autostart/lloyds-tracker.desktop` (XDG
@@ -227,6 +242,8 @@ linux/src/
 ├── settings_window.rs  # postavke (3 taba)
 ├── startup_reminder.rs # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── auto_stop.rs        # upozorenje 1 min prije auto-stopa + produženja
+├── update.rs           # provjera nove verzije (GitHub API, ureq + rustls)
+├── update_popup.rs     # pop-up "Nova verzija" (jednom po verziji)
 ├── idle.rs             # DBus: Mutter IdleMonitor / ScreenSaver
 ├── session.rs          # DBus: zaključan ekran (GNOME / freedesktop / logind)
 ├── autostart.rs        # XDG autostart .desktop
@@ -256,6 +273,9 @@ linux/src/
 | `.sheet` (ispravak unosa) | modalni `gtk::Window` (`transient_for`) |
 | SwiftUI `DatePicker(.hourAndMinute)` | dva `SpinButton`-a (sat + minuta) |
 | `.help(…)` tooltip | `set_tooltip_text` |
+| `UpdateChecker.swift` (`URLSession`) | `update.rs` (`ureq` na pomoćnom threadu, rezultat kanalom na GTK thread) |
+| `UpdatePopup.swift` | `update_popup.rs` |
+| `NSWorkspace.open(url)` | `gio::AppInfo::launch_default_for_uri` |
 
 ### Što je namjerno drukčije
 

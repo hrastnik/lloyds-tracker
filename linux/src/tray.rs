@@ -20,6 +20,8 @@ pub enum TrayCommand {
     Stop,
     OpenSummary,
     OpenSettings,
+    /// Release stranica nove verzije (ništa se ne instalira samo).
+    OpenUpdatePage,
     Quit,
 }
 
@@ -37,6 +39,8 @@ pub struct TraySnapshot {
     pub is_tracking: bool,
     pub is_paused: bool,
     pub can_prompt_now: bool,
+    /// Novija verzija na GitHubu (None = nema je).
+    pub update: Option<String>,
 }
 
 /// Koliko zadnjih unosa stane u meni — isto kao macOS popover.
@@ -67,6 +71,7 @@ impl TraySnapshot {
             is_tracking: engine.is_tracking,
             is_paused: engine.pause_until.is_some(),
             can_prompt_now: engine.can_prompt_now(),
+            update: engine.available_update.as_ref().map(|u| u.version.clone()),
         }
     }
 }
@@ -181,6 +186,12 @@ impl ksni::Tray for LloydsTray {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let s = &self.snapshot;
         let mut items: Vec<MenuItem<Self>> = Vec::new();
+
+        // Obavijest o novoj verziji — otvara release stranicu. Na vrhu, da se vidi.
+        if let Some(version) = &s.update {
+            items.push(action(format!("Nova verzija {version} · Preuzmi"), TrayCommand::OpenUpdatePage));
+            items.push(MenuItem::Separator);
+        }
 
         // Zaglavlje: dan i stanje.
         items.push(info(format!("LLOYDS TRACKER — {}", s.day_title)));

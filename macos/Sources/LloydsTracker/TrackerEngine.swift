@@ -14,6 +14,10 @@ final class TrackerEngine: ObservableObject {
     /// Vrijeme automatskog zaustavljanja za trenutnu sesiju (nil = isključeno).
     /// Produženja iz upozorenja mijenjaju samo ovo, ne i postavku.
     @Published var autoStopAt: Date?
+    /// Novija verzija na GitHubu (nil = nema je ili provjera nije rađena).
+    @Published var availableUpdate: AvailableUpdate?
+    /// Ishod zadnje provjere nove verzije, za prikaz u postavkama.
+    @Published var updateStatus: String?
 
     @Published var settings: AppSettings {
         didSet {
@@ -48,6 +52,13 @@ final class TrackerEngine: ObservableObject {
     /// je dan u međuvremenu pokrenut. Drži se u memoriji: kod restarta aplikacije ulogu
     /// ionako preuzima podsjetnik kod pokretanja.
     private var workdayReminderDayKey: String?
+    private let updatePopup = UpdatePopupController()
+    /// Prva provjera nove verzije malo nakon pokretanja (da se app slegne), dalje jednom
+    /// dnevno; nakon neuspjele (nema mreže) opet za sat.
+    private var nextUpdateCheckAt = Date().addingTimeInterval(15)
+    private var updateCheckInFlight = false
+    /// Nova verzija čiji pop-up čeka da se makne prompt/podsjetnik.
+    private var pendingUpdatePopup: AvailableUpdate?
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
@@ -409,6 +420,7 @@ final class TrackerEngine: ObservableObject {
 
     private func showAutoStopWarning(stopAt: Date) {
         autoStopWarningShown = true
+        updatePopup.close()
         if settings.soundEnabled {
             NSSound(named: "Glass")?.play()
         }
@@ -493,6 +505,7 @@ final class TrackerEngine: ObservableObject {
         if let start = workdayStart(on: now), now >= start {
             workdayReminderDayKey = Store.dayKey(now)
         }
+        updatePopup.close()
         startupReminder.show(
             dayTitle: Fmt.dayTitle.string(from: now),
             backfillFrom: backfillStart(now: now),
@@ -506,11 +519,78 @@ final class TrackerEngine: ObservableObject {
         )
     }
 
+    // MARK: - Nova verzija
+
+    private func checkForUpdateIfDue(now: Date) {
+        guard settings.updateCheckEnabled, !updateCheckInFlight, now >= nextUpdateCheckAt else { return }
+        checkForUpdate()
+    }
+
+    /// Pita GitHub za zadnji release — iz tick petlje i ručno ("Provjeri sada" u postavkama).
+    func checkForUpdate() {
+        guard !updateCheckInFlight else { return }
+        guard let current = UpdateChecker.currentVersion else {
+            updateStatus = "Verzija nije poznata (pokrenuto izvan .app bundle-a)."
+            nextUpdateCheckAt = .distantFuture
+            return
+        }
+        updateCheckInFlight = true
+        updateStatus = "Provjeravam…"
+        Task { @MainActor in
+            defer { updateCheckInFlight = false }
+            do {
+                let latest = try await UpdateChecker.fetchLatest()
+                nextUpdateCheckAt = Date().addingTimeInterval(24 * 3600)
+                handleLatest(latest, current: current)
+            } catch {
+                nextUpdateCheckAt = Date().addingTimeInterval(3600)
+                // Provjera je isključena dok je zahtjev bio u tijeku.
+                guard settings.updateCheckEnabled else { return }
+                updateStatus = "Provjera nije uspjela (nema mreže?). Pokušat ću opet za sat."
+            }
+        }
+    }
+
+    private func handleLatest(_ latest: AvailableUpdate, current: String) {
+        // Provjera je isključena dok je zahtjev bio u tijeku.
+        guard settings.updateCheckEnabled else { return }
+        guard UpdateChecker.isNewer(latest.version, than: current) else {
+            availableUpdate = nil
+            updateStatus = "Imaš najnoviju verziju."
+            return
+        }
+        availableUpdate = latest
+        updateStatus = "Dostupna je verzija \(latest.version)."
+        if settings.updateNotifiedVersion != latest.version {
+            pendingUpdatePopup = latest
+            showPendingUpdatePopup()
+        }
+    }
+
+    /// Pop-up se ne gura preko prompta, podsjetnika ni upozorenja (svi su u istom kutu),
+    /// a ni na zaključan ekran — čeka da se maknu, tick ga onda pokuša opet.
+    private func showPendingUpdatePopup() {
+        guard let update = pendingUpdatePopup, !isLocked, !prompt.isVisible,
+              !startupReminder.isVisible, !autoStopWarning.isVisible else { return }
+        pendingUpdatePopup = nil
+        settings.updateNotifiedVersion = update.version
+        updatePopup.show(update: update, currentVersion: UpdateChecker.currentVersion ?? "") { [weak self] in
+            self?.openUpdatePage()
+        }
+    }
+
+    /// Release stranica nove verzije (s menija i iz pop-upa).
+    func openUpdatePage() {
+        NSWorkspace.shared.open(availableUpdate?.url ?? UpdateChecker.latestReleasePage)
+    }
+
     // MARK: - Tick petlja
 
     private func tick() {
         let now = Date()
         checkWorkdayStart(now: now)
+        checkForUpdateIfDue(now: now)
+        showPendingUpdatePopup()
         // Dan je zatvoren i čeka se odgovor na zadnji prompt — ništa se više ne zakazuje.
         guard isTracking, !awaitingFinalAnswer else { return }
 
@@ -644,6 +724,8 @@ final class TrackerEngine: ObservableObject {
         if settings.soundEnabled {
             NSSound(named: "Glass")?.play()
         }
+        // Isti kut ekrana — prompt ima prednost, obavijest o verziji ostaje u meniju.
+        updatePopup.close()
         let submitted = request
         prompt.show(
             request: request,
@@ -759,6 +841,16 @@ final class TrackerEngine: ObservableObject {
             autoStopWarning.close()
             autoStopWarningShown = false
             autoStopAt = isTracking ? nextAutoStop(after: Date()) : nil
+        }
+        if old.updateCheckEnabled != settings.updateCheckEnabled {
+            if settings.updateCheckEnabled {
+                nextUpdateCheckAt = Date()
+            } else {
+                availableUpdate = nil
+                pendingUpdatePopup = nil
+                updateStatus = nil
+                updatePopup.close()
+            }
         }
         if old.workdayStartEnabled != settings.workdayStartEnabled
             || old.workdayStartHour != settings.workdayStartHour

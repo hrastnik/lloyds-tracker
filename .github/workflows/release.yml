@@ -2,7 +2,8 @@ name: Release
 
 # Cut a release by pushing a version tag, e.g.:
 #   git tag v1.0.0 && git push origin v1.0.0
-# This builds the Windows .exe and the Linux tarball and attaches both to a GitHub Release.
+# This builds the Windows .exe, the Linux tarball and the macOS (Apple Silicon) .zip and
+# attaches all three to a GitHub Release.
 
 on:
   push:
@@ -62,8 +63,33 @@ jobs:
           path: linux/dist/*.tar.gz
           if-no-files-found: error
 
+  macos:
+    # Apple Silicon runner — the .app is arm64 only (M1 and newer).
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build .app (version from tag)
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $ver" macos/Support/Info.plist
+          macos/build.sh
+
+      - name: Zip .app
+        # ditto keeps the bundle's symlinks, permissions and ad-hoc signature intact.
+        run: ditto -c -k --sequesterRsrc --keepParent macos/dist/LloydsTracker.app macos/dist/LloydsTracker-macOS-arm64.zip
+
+      - name: Upload .zip for the release job
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-zip
+          path: macos/dist/LloydsTracker-macOS-arm64.zip
+          if-no-files-found: error
+
   release:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
 
     steps:
@@ -73,13 +99,14 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release with both builds
+      - name: Create GitHub Release with all three builds
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" \
             artifacts/LloydsTracker.exe \
             artifacts/*.tar.gz \
+            artifacts/*.zip \
             --repo "${{ github.repository }}" \
             --title "Lloyds Tracker ${{ github.ref_name }}" \
             --generate-notes

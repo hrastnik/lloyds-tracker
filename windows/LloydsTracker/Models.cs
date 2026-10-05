@@ -111,6 +111,16 @@ public sealed class AppSettings
     [JsonPropertyName("soundEnabled")]
     public bool SoundEnabled { get; set; } = true;
 
+    /// <summary>Once a day, ask GitHub whether a new version exists (it only notifies, never
+    /// installs).</summary>
+    [JsonPropertyName("updateCheckEnabled")]
+    public bool UpdateCheckEnabled { get; set; } = true;
+
+    /// <summary>The version whose new-version pop-up has already been shown — it pops up once
+    /// per version, after that only the menu shows it.</summary>
+    [JsonPropertyName("updateNotifiedVersion")]
+    public string UpdateNotifiedVersion { get; set; } = "";
+
     /// <summary>The reminder also offers a start from the beginning of the work day —
     /// opening the laptop at 9:30 can then be recorded as work from 8:30 (the morning is
     /// backfilled).</summary>

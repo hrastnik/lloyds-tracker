@@ -18,6 +18,9 @@ pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvori
 nudi i **start od 8:30**, pa se jutro nadoknadi.
 Vikendom šuti (može se isključiti).
 
+Jednom dnevno provjeri na GitHubu je li izašla **nova verzija**. Ako je, javi se jednom
+pop-upom, a poveznica za preuzimanje ostaje u meniju. Ništa ne instalira samo.
+
 Tri nativne verzije, isti JSON format podataka:
 
 | Verzija | Tehnologija | Folder |
@@ -25,6 +28,20 @@ Tri nativne verzije, isti JSON format podataka:
 | **macOS** | Swift 6 / SwiftUI + AppKit (`MenuBarExtra`) | [`macos/`](macos/) |
 | **Windows** | C# / .NET 8 + WinForms (`NotifyIcon`) | [`windows/`](windows/) |
 | **Linux** | Rust / GTK4 + `ksni` (StatusNotifierItem) | [`linux/`](linux/) |
+
+## Preuzimanje
+
+Gotovi buildovi su uz svaki release: **[zadnja verzija](https://github.com/hrastnik/lloyds-tracker/releases/latest)**.
+
+| Sustav | Datoteka | Napomena |
+|---|---|---|
+| macOS | `LloydsTracker-macOS-arm64.zip` | samo Apple Silicon (M1 i noviji), macOS 14+ |
+| Windows | `LloydsTracker.exe` | treba .NET 8 Desktop Runtime |
+| Linux | `lloyds-tracker-linux-x86_64.tar.gz` | raspakiraj i pokreni `install.sh` |
+
+Mac verzija nije potpisana Apple Developer certifikatom, pa je macOS kod prvog otvaranja ne
+želi pokrenuti: desni klik na aplikaciju → **Open**, ili System Settings → Privacy & Security
+→ **Open Anyway**. Novu verziju instaliraš tako da zamijeniš staru u `/Applications`.
 
 ## macOS
 
@@ -58,16 +75,17 @@ Zahtjevi: GTK 4.10+ i StatusNotifierItem host u traci (KDE ima ugrađeno, **GNOM
 AppIndicator ekstenziju**). Za build: Rust stable + `libgtk-4-dev`. Detalji:
 [linux/README.md](linux/README.md).
 
-## Nova verzija / Windows i Linux build
+## Nova verzija / build na CI-u
 
 WinForms je `net8.0-windows`, a GTK4 build traži Linux — pa se ni `.exe` ni Linux tarball
-**ne mogu buildati na Macu**. To radi GitHub Actions:
+**ne mogu buildati na Macu**. To radi GitHub Actions, a uz njih i macOS `.zip`:
 
 | Trigger | Workflow | Rezultat |
 |---|---|---|
 | push na `main` koji dira `windows/**` | [windows.yml](.github/workflows/windows.yml) | `.exe` kao **build artifact** (traje 90 dana, treba GitHub login) |
 | push na `main` koji dira `linux/**` | [linux.yml](.github/workflows/linux.yml) | `clippy -D warnings` + `.tar.gz` kao **build artifact** |
-| tag `vX.Y.Z` | [release.yml](.github/workflows/release.yml) | **GitHub Release** s priloženim `.exe` i `.tar.gz` (verzija se uzima iz taga) |
+| push na `main` koji dira `macos/**` | [macos.yml](.github/workflows/macos.yml) | `.app` (Apple Silicon) zapakiran u `.zip` kao **build artifact** |
+| tag `vX.Y.Z` | [release.yml](.github/workflows/release.yml) | **GitHub Release** s priloženim `.exe`, `.tar.gz` i macOS `.zip` (verzija se uzima iz taga) |
 
 Postupak za novu verziju:
 
@@ -76,14 +94,19 @@ Postupak za novu verziju:
 #      macos/Support/Info.plist  → CFBundleShortVersionString (+ CFBundleVersion)
 #      windows/LloydsTracker/LloydsTracker.csproj → <Version>
 #      linux/Cargo.toml → version
-# 2. commit + push na main  (→ CI provjeri da se Windows i Linux verzija kompajliraju)
+# 2. commit + push na main  (→ CI provjeri da se sve tri verzije kompajliraju)
 git push origin main
-# 3. tag = release s .exe-om i .tar.gz-om
+# 3. tag = release s .exe-om, .tar.gz-om i macOS .zip-om
 git tag v1.1.0 && git push origin v1.1.0
 gh run watch                       # ili: gh release view v1.1.0
-# 4. macOS build je lokalan:
+# 4. (po želji) lokalni macOS build za vlastitu instalaciju:
 cd macos && ./build.sh && cp -r dist/LloydsTracker.app /Applications/
 ```
+
+Aplikacije (na sva tri sustava) jednom dnevno pitaju GitHub API za zadnji release
+(`/repos/hrastnik/lloyds-tracker/releases/latest`) i uspoređuju ga sa svojom verzijom —
+zato release mora biti objavljen (ne draft) i tag mora biti `vX.Y.Z`. Repo je javan, pa
+provjera i preuzimanje rade bez GitHub logina.
 
 ## Podaci
 

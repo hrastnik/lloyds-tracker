@@ -36,8 +36,11 @@ cd linux && PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/sha
 Windows se **ne može buildati na Macu** (`net8.0-windows`) i `dotnet` nije instaliran —
 push na `main` je jedina provjera da se C# kompajlira (`gh run list`). Linux tarball isto
 nastaje tek na CI-u (`linux.yml`), ali se kod lokalno da provjeriti gore navedenim
-clippyjem. Release s `.exe`-om i `.tar.gz`-om ide preko taga `vX.Y.Z`; cijeli postupak i
-bump verzija su u [README.md](README.md#nova-verzija--windows-i-linux-build).
+clippyjem. Release s `.exe`-om, `.tar.gz`-om i macOS `.zip`-om (Apple Silicon, `macos.yml` /
+`release.yml`) ide preko taga `vX.Y.Z`; cijeli postupak i bump verzija su u
+[README.md](README.md#nova-verzija--build-na-ci-u). Aplikacije jednom dnevno provjeravaju
+GitHub `releases/latest` (repo je javan), pa svaki objavljeni tag korisnicima javlja novu
+verziju.
 
 ## Kod pokretanja aplikacije
 

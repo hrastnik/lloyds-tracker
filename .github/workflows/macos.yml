@@ -1,0 +1,36 @@
+name: macOS build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos.yml"
+  pull_request:
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    # Apple Silicon runner — the .app is arm64 only (M1 and newer).
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build .app
+        run: macos/build.sh
+
+      - name: Zip .app
+        # ditto keeps the bundle's symlinks, permissions and ad-hoc signature intact.
+        run: ditto -c -k --sequesterRsrc --keepParent macos/dist/LloydsTracker.app macos/dist/LloydsTracker-macOS-arm64.zip
+
+      - name: Upload LloydsTracker-macOS-arm64.zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: LloydsTracker-macOS-arm64
+          path: macos/dist/LloydsTracker-macOS-arm64.zip
+          if-no-files-found: error

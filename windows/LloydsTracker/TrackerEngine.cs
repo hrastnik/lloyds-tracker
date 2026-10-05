@@ -23,6 +23,10 @@ public sealed class TrackerEngine : IDisposable
     /// warning change only this, never the setting.</summary>
     public DateTime? AutoStopAt { get; private set; }
     public string? LaunchAtLoginStatus { get; private set; }
+    /// <summary>A newer version on GitHub (null = there is none, or no check has run yet).</summary>
+    public AvailableUpdate? AvailableUpdate { get; private set; }
+    /// <summary>Outcome of the last new-version check, shown in the settings.</summary>
+    public string? UpdateStatus { get; private set; }
     public AppSettings Settings { get; private set; }
 
     /// <summary>Fired (UI thread) whenever state changes; the tray/popover re-read state.</summary>
@@ -55,6 +59,14 @@ public sealed class TrackerEngine : IDisposable
     /// day got started meanwhile. Kept in memory: after an app restart the launch reminder
     /// takes over the role anyway.</summary>
     private string? _workdayReminderDayKey;
+    private readonly UpdatePopupController _updatePopup = new();
+    /// <summary>First new-version check shortly after launch (so the app settles), then once a
+    /// day; after a failed one (no network) again in an hour.</summary>
+    private DateTime _nextUpdateCheckAt = DateTime.Now.AddSeconds(15);
+    private bool _updateCheckInFlight;
+    /// <summary>A new version whose pop-up waits for the prompt/reminder to go away.</summary>
+    private AvailableUpdate? _pendingUpdatePopup;
+    private bool _disposed;
     /// <summary>Hidden control used to marshal background-thread callbacks (SessionSwitch)
     /// back onto the UI thread.</summary>
     private readonly Control _marshal = new();
@@ -442,6 +454,7 @@ public sealed class TrackerEngine : IDisposable
     private void ShowAutoStopWarning(DateTime stopAt)
     {
         _autoStopWarningShown = true;
+        _updatePopup.Close();
         if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
         _autoStopWarning.Show(stopAt, AutoStopLead,
             onExtend: ExtendAutoStop,
@@ -516,11 +529,141 @@ public sealed class TrackerEngine : IDisposable
         // up at the set time (e.g. launch at 7:00 with a work day starting at 8:30).
         if (WorkdayStart(now) is DateTime start && now >= start)
             _workdayReminderDayKey = Store.DayKey(now);
+        _updatePopup.Close();
         _startupReminder.Show(Fmt.DayTitle(now), BackfillStart(now),
             // The backfill time is computed at click time, not at display time — otherwise a
             // reminder that stayed up overnight would start the day from yesterday's start.
             onStart: useBackfill => Start(useBackfill ? BackfillStart(DateTime.Now) : null),
             onDismiss: () => { });
+    }
+
+    // MARK: - New version
+
+    private void CheckForUpdateIfDue(DateTime now)
+    {
+        if (!Settings.UpdateCheckEnabled || _updateCheckInFlight || now < _nextUpdateCheckAt) return;
+        CheckForUpdate();
+    }
+
+    /// <summary>Asks GitHub for the latest release — from the tick loop and manually ("Provjeri
+    /// sada" in the settings).</summary>
+    public void CheckForUpdate()
+    {
+        if (_updateCheckInFlight) return;
+        if (UpdateChecker.CurrentVersion is not string current)
+        {
+            UpdateStatus = "Verzija nije poznata.";
+            _nextUpdateCheckAt = DateTime.MaxValue;
+            RaiseChanged();
+            return;
+        }
+        _updateCheckInFlight = true;
+        UpdateStatus = "Provjeravam…";
+        RaiseChanged();
+        RunUpdateCheck(current);
+    }
+
+    /// <summary>The request runs off the UI thread; its result is handled back on it. async void,
+    /// so nothing may escape — an unhandled exception here would take the whole app down.</summary>
+    private async void RunUpdateCheck(string current)
+    {
+        try
+        {
+            AvailableUpdate? latest = null;
+            try
+            {
+                latest = await UpdateChecker.FetchLatestAsync();
+            }
+            catch (Exception)
+            {
+                // No network, timeout, rate limit, unexpected JSON — retried in an hour.
+            }
+            // The await resumes on the UI thread (WinForms SynchronizationContext); the hop is
+            // only a safety net in case the check was started without one.
+            if (_disposed) return;
+            if (_marshal.InvokeRequired)
+                _marshal.BeginInvoke(new Action(() => FinishUpdateCheck(latest, current)));
+            else
+                FinishUpdateCheck(latest, current);
+        }
+        catch (Exception)
+        {
+            _updateCheckInFlight = false;
+        }
+    }
+
+    private void FinishUpdateCheck(AvailableUpdate? latest, string current)
+    {
+        if (_disposed) return;
+        try
+        {
+            if (latest == null)
+            {
+                _nextUpdateCheckAt = DateTime.Now.AddHours(1);
+                // The check was turned off while the request was in flight.
+                if (Settings.UpdateCheckEnabled)
+                    UpdateStatus = "Provjera nije uspjela (nema mreže?). Pokušat ću opet za sat.";
+            }
+            else
+            {
+                _nextUpdateCheckAt = DateTime.Now.AddHours(24);
+                HandleLatest(latest, current);
+            }
+        }
+        catch (Exception)
+        {
+            // Never let a failure in handling the answer escape onto the message loop.
+        }
+        finally
+        {
+            _updateCheckInFlight = false;
+        }
+        RaiseChanged();
+    }
+
+    private void HandleLatest(AvailableUpdate latest, string current)
+    {
+        // The check was turned off while the request was in flight.
+        if (!Settings.UpdateCheckEnabled) return;
+        if (!UpdateChecker.IsNewer(latest.Version, current))
+        {
+            AvailableUpdate = null;
+            UpdateStatus = "Imaš najnoviju verziju.";
+            return;
+        }
+        AvailableUpdate = latest;
+        UpdateStatus = $"Dostupna je verzija {latest.Version}.";
+        if (Settings.UpdateNotifiedVersion != latest.Version)
+        {
+            _pendingUpdatePopup = latest;
+            ShowPendingUpdatePopup();
+        }
+    }
+
+    /// <summary>The pop-up isn't pushed over the prompt, the reminder or the warning (they share
+    /// the screen corners), nor onto a locked screen — it waits for them to go away, and the
+    /// tick tries again.</summary>
+    private void ShowPendingUpdatePopup()
+    {
+        if (_pendingUpdatePopup is not { } update || _session.IsLocked || _prompt.IsVisible
+            || _startupReminder.IsVisible || _autoStopWarning.IsVisible) return;
+        _pendingUpdatePopup = null;
+        MutateSettings(s => s.UpdateNotifiedVersion = update.Version);
+        _updatePopup.Show(update, UpdateChecker.CurrentVersion ?? "", onDownload: OpenUpdatePage);
+    }
+
+    /// <summary>The new version's release page (from the menu and from the pop-up).</summary>
+    public void OpenUpdatePage()
+    {
+        string url = AvailableUpdate?.Url ?? UpdateChecker.LatestReleasePage;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception)
+        {
+            // No default browser — nothing else to do.
+        }
     }
 
     // MARK: - Tick loop
@@ -529,6 +672,8 @@ public sealed class TrackerEngine : IDisposable
     {
         var now = DateTime.Now;
         CheckWorkdayStart(now);
+        CheckForUpdateIfDue(now);
+        ShowPendingUpdatePopup();
         // The day is closed and the final prompt is pending — nothing more gets scheduled.
         if (!IsTracking || _awaitingFinalAnswer) return;
 
@@ -684,6 +829,8 @@ public sealed class TrackerEngine : IDisposable
         request.Carried = carried;
 
         if (Settings.SoundEnabled) SystemSounds.Asterisk.Play();
+        // Same screen corner — the prompt takes precedence, the version notice stays in the menu.
+        _updatePopup.Close();
         _prompt.Show(
             request,
             Settings.PromptStyle,
@@ -831,6 +978,21 @@ public sealed class TrackerEngine : IDisposable
             AutoStopAt = IsTracking ? NextAutoStop(DateTime.Now) : null;
         }
 
+        if (old.UpdateCheckEnabled != Settings.UpdateCheckEnabled)
+        {
+            if (Settings.UpdateCheckEnabled)
+            {
+                _nextUpdateCheckAt = DateTime.Now;
+            }
+            else
+            {
+                AvailableUpdate = null;
+                _pendingUpdatePopup = null;
+                UpdateStatus = null;
+                _updatePopup.Close();
+            }
+        }
+
         if (old.WorkdayStartEnabled != Settings.WorkdayStartEnabled
             || old.WorkdayStartHour != Settings.WorkdayStartHour
             || old.WorkdayStartMinute != Settings.WorkdayStartMinute
@@ -901,11 +1063,13 @@ public sealed class TrackerEngine : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         _timer.Stop();
         _timer.Dispose();
         _session.Dispose();
         _prompt.Close();
         _autoStopWarning.Close();
+        _updatePopup.Close();
         _marshal.Dispose();
     }
 }

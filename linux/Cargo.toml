@@ -1,6 +1,6 @@
 [package]
 name = "lloyds-tracker"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Lloyds Tracker — praćenje vremena u traci (Linux port)"
@@ -24,6 +24,10 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 
 # Tray thread → GTK main thread; glib::spawn_future_local čita s ovog kanala.
 async-channel = "2"
+
+# Provjera nove verzije (GitHub API, jednom dnevno). Blocking klijent na zasebnom threadu;
+# rustls umjesto OpenSSL-a da build ne traži libssl-dev (CI ima samo libgtk-4-dev).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }

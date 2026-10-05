@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, DropDown, Label, Notebook, PolicyType, ScrolledWindow, SpinButton, Switch,
+    Align, Box as GtkBox, Button, DropDown, Label, Notebook, PolicyType, ScrolledWindow, SpinButton, Switch,
     Widget, Window,
 };
 
@@ -13,6 +13,7 @@ use crate::theme::Fmt;
 use crate::summary::open_data_folder;
 use crate::idle::IdleMonitor;
 use crate::session::SessionMonitor;
+use crate::update::UpdateChecker;
 use crate::{ui, App};
 
 const INTERVALS: [i64; 7] = [5, 10, 15, 20, 30, 45, 60];
@@ -53,6 +54,10 @@ pub struct SettingsWindow {
     launch_at_login: Switch,
     launch_status: Label,
     startup_reminder: Switch,
+
+    update_check: Switch,
+    update_check_now: Button,
+    update_status: Label,
 }
 
 impl SettingsWindow {
@@ -101,6 +106,10 @@ impl SettingsWindow {
             launch_at_login: Switch::new(),
             launch_status: ui::wrapped("", &["caption", "warn"], 58),
             startup_reminder: Switch::new(),
+
+            update_check: Switch::new(),
+            update_check_now: Button::with_label("Provjeri sada"),
+            update_status: ui::label("", &["caption"]),
         });
 
         // MARK: Početne vrijednosti
@@ -121,6 +130,7 @@ impl SettingsWindow {
         me.lock_pause.set_active(s.lock_pause_enabled);
         me.launch_at_login.set_active(s.launch_at_login);
         me.startup_reminder.set_active(s.show_startup_reminder);
+        me.update_check.set_active(s.update_check_enabled);
 
         let notebook = Notebook::new();
         notebook.append_page(&tab(&me.prompt_tab()), Some(&Label::new(Some("Promptanje"))));
@@ -132,6 +142,7 @@ impl SettingsWindow {
         me.updating.set(false);
         me.sync_enabled();
         me.refresh_captions();
+        me.refresh_update_status();
         window.present();
         me
     }
@@ -236,6 +247,26 @@ impl SettingsWindow {
         ));
         page.append(&system);
 
+        let update = section("NOVA VERZIJA");
+        update.append(&row("Trenutna verzija", &ui::label(UpdateChecker::current_version(), &["mono"])));
+        update.append(&row("Provjeravaj nove verzije", &self.update_check));
+        update.append(&ui::wrapped(
+            "Jednom dnevno provjeri na GitHubu je li izašla nova verzija. Ako je, javi se jednom \
+             pop-upom, a poveznica za preuzimanje ostaje u meniju. Ništa se ne instalira samo.",
+            &["caption"],
+            58,
+        ));
+        let check_row = ui::hbox(12);
+        self.update_check_now.add_css_class("pill");
+        self.update_check_now.set_valign(Align::Center);
+        check_row.append(&self.update_check_now);
+        self.update_status.set_valign(Align::Center);
+        self.update_status.set_wrap(true);
+        self.update_status.set_hexpand(true);
+        check_row.append(&self.update_status);
+        update.append(&check_row);
+        page.append(&update);
+
         let data = section("PODACI");
         let location = ui::wrapped(&Store::directory().display().to_string(), &["mono", "caption"], 58);
         location.set_selectable(true);
@@ -279,10 +310,16 @@ impl SettingsWindow {
             idle_enabled,
             lock_pause,
             launch_at_login,
-            startup_reminder
+            startup_reminder,
+            update_check
         );
         on_dropdown!(interval, prompt_style, history_limit, idle_threshold);
         on_spin!(workday_hour, workday_minute, auto_stop_hour, auto_stop_minute);
+
+        // Ručna provjera — status se osvježi kad engine javi ishod (`refresh_update_status`).
+        let me = self.clone();
+        self.update_check_now
+            .connect_clicked(move |_| me.app.clone().mutate(|engine| engine.check_for_update()));
     }
 
     /// Skuplja stanje svih kontrola i predaje ga engineu (koji ga sprema i primijeni).
@@ -305,6 +342,9 @@ impl SettingsWindow {
             show_startup_reminder: self.startup_reminder.is_active(),
             skip_weekend_reminders: self.skip_weekends.is_active(),
             sound_enabled: self.sound.is_active(),
+            update_check_enabled: self.update_check.is_active(),
+            // Ne prikazuje se u postavkama — pamti engine, pa se samo prenosi.
+            update_notified_version: self.app.engine.borrow().settings.update_notified_version.clone(),
             workday_start_backfill_enabled: self.workday_backfill.is_active(),
             workday_start_enabled: self.workday_enabled.is_active(),
             workday_start_hour: self.workday_hour.value_as_int() as u32,
@@ -325,6 +365,7 @@ impl SettingsWindow {
         self.auto_stop_hour.set_sensitive(auto_stop);
         self.auto_stop_minute.set_sensitive(auto_stop);
         self.idle_threshold.set_sensitive(self.idle_enabled.is_active());
+        self.update_check_now.set_sensitive(self.update_check.is_active());
     }
 
     /// Opisi opcija govore o konkretnom satu ("Start od 08:30"), pa se osvježavaju kad
@@ -352,6 +393,17 @@ impl SettingsWindow {
         let status = self.app.engine.borrow().launch_at_login_status.clone();
         self.launch_status.set_text(status.as_deref().unwrap_or(""));
         self.launch_status.set_visible(status.is_some());
+    }
+
+    /// Ishod provjere nove verzije ("Provjeravam…", "Imaš najnoviju verziju." …). Zove se
+    /// nakon svake promjene u engineu, pa se labela dira samo kad se tekst promijeni.
+    pub fn refresh_update_status(&self) {
+        let status = self.app.engine.borrow().update_status.clone();
+        let text = status.as_deref().unwrap_or("");
+        if self.update_status.text() != text {
+            self.update_status.set_text(text);
+        }
+        self.update_status.set_visible(status.is_some());
     }
 
     pub fn present(&self) {

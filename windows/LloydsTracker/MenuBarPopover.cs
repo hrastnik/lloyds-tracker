@@ -44,7 +44,12 @@ internal sealed class MenuBarPopover : Form
 
     private void OnEngineChanged()
     {
-        if (Visible) RebuildContent();
+        if (!Visible) return;
+        // The popover sits on the taskbar, so a height change (e.g. the new-version banner
+        // appearing) keeps the bottom edge in place and grows upwards.
+        int bottom = Bottom;
+        RebuildContent();
+        Top = bottom - Height;
     }
 
     public void Toggle()
@@ -86,6 +91,8 @@ internal sealed class MenuBarPopover : Form
 
         int y = 0;
         y = BuildHeader(y);
+        if (_engine.AvailableUpdate is { } update)
+            y = BuildUpdateBanner(update, y);
         y = Divider(y);
         y = BuildStatus(y);
         y = Divider(y);
@@ -124,6 +131,36 @@ internal sealed class MenuBarPopover : Form
         Controls.Add(day);
 
         return top + Brand.S(18) + Brand.S(12);
+    }
+
+    /// <summary>New-version notice — opens the release page (nothing gets installed by itself).</summary>
+    private int BuildUpdateBanner(AvailableUpdate update, int y)
+    {
+        var banner = new Panel { BackColor = Palette.Yellow, Location = new Point(0, y), Width = Width_, Cursor = Cursors.Hand };
+
+        // The arrow stands in for the macOS arrow.down.circle.fill symbol.
+        var title = new Label { AutoSize = true, Text = $"↓  Nova verzija {update.Version}", Font = Brand.Ui(9f, FontStyle.Bold), ForeColor = Palette.Black, BackColor = Palette.Yellow, Cursor = Cursors.Hand };
+        var download = new Label { AutoSize = true, Text = "Preuzmi", Font = Brand.Ui(8.5f, FontStyle.Bold), ForeColor = Palette.Black, BackColor = Palette.Yellow, Cursor = Cursors.Hand };
+
+        int height = Math.Max(title.PreferredHeight, download.PreferredHeight) + Brand.S(16);
+        banner.Height = height;
+        title.Location = new Point(Brand.S(16), (height - title.PreferredHeight) / 2);
+        download.Location = new Point(Width_ - Brand.S(16) - download.PreferredWidth, (height - download.PreferredHeight) / 2);
+        banner.Controls.Add(title);
+        banner.Controls.Add(download);
+
+        // The whole strip is one button, like on macOS.
+        void Open(object? sender, EventArgs e)
+        {
+            HidePopover();
+            _engine.OpenUpdatePage();
+        }
+        banner.Click += Open;
+        title.Click += Open;
+        download.Click += Open;
+
+        Controls.Add(banner);
+        return y + height;
     }
 
     private int BuildStatus(int y)

@@ -10,6 +10,9 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if let update = engine.availableUpdate {
+                updateBanner(update)
+            }
             Divider().overlay(Color.white.opacity(0.1))
             statusSection
             Divider().overlay(Color.white.opacity(0.1))
@@ -46,6 +49,30 @@ struct MenuBarView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    /// Obavijest o novoj verziji — otvara release stranicu (ništa se ne instalira samo).
+    private func updateBanner(_ update: AvailableUpdate) -> some View {
+        Button {
+            dismissMenu()
+            engine.openUpdatePage()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                Text("Nova verzija \(update.version)")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("Preuzmi")
+                    .font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(Color.lloydsBlack)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color.lloydsYellow)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var statusSection: some View {

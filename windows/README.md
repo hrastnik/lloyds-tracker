@@ -156,6 +156,19 @@ Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se kor
 te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
 ponoć.
 
+### Nova verzija
+
+Jednom dnevno (prvi put ~15 s nakon pokretanja) aplikacija pita GitHub za zadnji release.
+Ako je izašla novija verzija, javi se **jednom pop-upom po verziji** (*Preuzmi* / *Kasnije*),
+a u popoveru iz traya ostaje žuta traka **Nova verzija X · Preuzmi** dok ne nadogradiš.
+Klik otvara release stranicu u pregledniku; aplikacija **ništa ne skida ni ne instalira
+sama**: novi `.exe` preuzmeš i zamijeniš postojeći. Pop-up ne iskače preko prompta,
+podsjetnika ni upozorenja (ni na zaključan ekran), nego pričeka da se maknu. Bez mreže
+provjera pokuša opet za sat.
+
+Provjera se gasi u *Postavke → Sustav → Provjeravaj nove verzije*; tamo je i trenutna
+verzija i gumb **Provjeri sada**.
+
 ## Postavke
 
 Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
@@ -174,6 +187,7 @@ Tray → *Postavke…* — tri taba: **Promptanje**, **Radni dan**, **Sustav**.
 | Broj zapamćenih unosa (povijest) | 15 |
 | Pokreni kod prijave (autostart) | isključeno |
 | Podsjetnik kod pokretanja (pop-up) | uključeno |
+| Provjeravaj nove verzije (jednom dnevno, GitHub) | uključeno |
 | Spoji susjedne unose istog naziva (toggle u *Pregled dana → Kronološki*) | uključeno |
 
 **Pokreni kod prijave** upisuje/briše vrijednost u
@@ -209,6 +223,8 @@ windows/LloydsTracker/
 ├── EntryEditForm.cs          # prozor za ispravak unosa (Pregled dana → Kronološki)
 ├── StartupReminder.cs        # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.cs        # upozorenje 1 min prije auto-stopa + produženja
+├── UpdateChecker.cs          # provjera nove verzije (GitHub releases API)
+├── UpdatePopup.cs            # pop-up o novoj verziji (jednom po verziji)
 ├── IdleMonitor.cs            # GetLastInputInfo
 ├── SessionMonitor.cs         # SessionSwitch (lock/unlock)
 ├── LaunchAtLogin.cs          # registry Run key
@@ -235,4 +251,8 @@ windows/LloydsTracker/
 | `.sheet` (ispravak unosa) | modalni `Form` (`ShowDialog`) |
 | SwiftUI `DatePicker(.hourAndMinute)` | dva dark drop-downa (sat + minuta) |
 | `.help(…)` tooltip | `ToolTip.SetToolTip` |
+| `UpdateChecker.swift` (`URLSession`, `JSONDecoder`) | `UpdateChecker.cs` (`HttpClient`, `System.Text.Json`) |
+| `UpdatePopup.swift` | `UpdatePopup.cs` |
+| `CFBundleShortVersionString` (Info.plist) | verzija assemblyja (`<Version>` u csproj, CI: `-p:Version=X.Y.Z`) |
+| `NSWorkspace.shared.open(url)` | `Process.Start` (`UseShellExecute = true`) |
 ```

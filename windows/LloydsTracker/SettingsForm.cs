@@ -23,6 +23,8 @@ internal sealed class SettingsForm : Form
     private Label _workdayReminderCaption = null!;
     private Label _workdayBackfillCaption = null!;
     private Label _launchStatus = null!;
+    private FlatButton _checkNow = null!;
+    private Label _updateStatus = null!;
 
     private readonly List<FlatButton> _pills = new();
     private readonly List<Panel> _pages = new();
@@ -49,7 +51,7 @@ internal sealed class SettingsForm : Form
         int contentHeight = 0;
         AddPage(tabBar, tabsHeight, "Promptanje", () => { BuildPromptSection(); BuildHistorySection(); }, ref contentHeight);
         AddPage(tabBar, tabsHeight, "Radni dan", () => { BuildWorkdayStartSection(); BuildAutoStopSection(); BuildIdleSection(); }, ref contentHeight);
-        AddPage(tabBar, tabsHeight, "Sustav", () => { BuildSystemSection(); BuildDataSection(); }, ref contentHeight);
+        AddPage(tabBar, tabsHeight, "Sustav", () => { BuildSystemSection(); BuildUpdateSection(); BuildDataSection(); }, ref contentHeight);
 
         // Prozor ne smije prerasti ekran (svaki px je DPI-skaliran) — višak stranica scrolla.
         if (Screen.PrimaryScreen is Screen screen)
@@ -57,6 +59,21 @@ internal sealed class SettingsForm : Form
         ClientSize = new Size(ClientSize.Width, tabsHeight + contentHeight);
         foreach (var page in _pages) page.Size = new Size(ClientSize.Width, contentHeight);
         SelectTab(0);
+
+        // The new-version status changes while the window is open ("Provjeravam…" → result).
+        _engine.Changed += OnEngineChanged;
+    }
+
+    private void OnEngineChanged()
+    {
+        if (IsDisposed) return;
+        UpdateCheckControls();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _engine.Changed -= OnEngineChanged;
+        base.Dispose(disposing);
     }
 
     /// <summary>Build one tab: a pill in the tab bar plus its page. Grows
@@ -257,6 +274,49 @@ internal sealed class SettingsForm : Form
             v => _engine.MutateSettings(s => s.ShowStartupReminder = v));
         Caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.");
         Gap(8);
+    }
+
+    private void BuildUpdateSection()
+    {
+        SectionHeader("NOVA VERZIJA");
+        RowLabel("Trenutna verzija");
+        var version = new Label { AutoSize = false, Text = UpdateChecker.CurrentVersion ?? "nepoznata", ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(Brand.S(236), _y + Brand.S(4)), Size = new Size(ClientSize.Width - Brand.S(20) - Brand.S(236), Brand.S(22)), TextAlign = ContentAlignment.MiddleLeft };
+        _stack.Controls.Add(version);
+        _y += Brand.S(34);
+
+        Toggle("Provjeravaj nove verzije", _engine.Settings.UpdateCheckEnabled, v =>
+        {
+            _engine.MutateSettings(s => s.UpdateCheckEnabled = v);
+            UpdateCheckControls();
+        });
+        Caption("Jednom dnevno provjeri na GitHubu je li izašla nova verzija. Ako je, javi se jednom pop-upom, a poveznica za preuzimanje ostaje u meniju. Ništa se ne instalira samo.");
+        Gap(6);
+
+        _checkNow = new FlatButton { Text = "Provjeri sada", CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(120), Brand.S(28)), Location = new Point(Brand.S(20), _y) };
+        _checkNow.Click += (_, _) => _engine.CheckForUpdate();
+        _stack.Controls.Add(_checkNow);
+
+        // Next to the button; the longest status ("Provjera nije uspjela…") wraps to two lines.
+        int statusLeft = _checkNow.Right + Brand.S(10);
+        _updateStatus = new Label { AutoSize = false, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), TextAlign = ContentAlignment.MiddleLeft, Location = new Point(statusLeft, _y - Brand.S(2)), Size = new Size(ClientSize.Width - Brand.S(20) - statusLeft, Brand.S(32)) };
+        _stack.Controls.Add(_updateStatus);
+        _y += Brand.S(32) + Brand.S(4);
+
+        UpdateCheckControls();
+        Gap(8);
+    }
+
+    /// <summary>"Provjeri sada" follows the toggle, the status follows the engine.</summary>
+    private void UpdateCheckControls()
+    {
+        bool enabled = _engine.Settings.UpdateCheckEnabled;
+        _checkNow.Enabled = enabled;
+        _checkNow.TextColor = enabled ? Palette.Yellow : Palette.Gray.With(0.4);
+        _checkNow.Fill = enabled ? Palette.Yellow.With(0.12) : Color.Transparent;
+        _checkNow.BorderColor = enabled ? Palette.Yellow.With(0.5) : Palette.White.OverBlack(0.2);
+        _checkNow.BorderWidth = 1;
+        _checkNow.Invalidate();
+        _updateStatus.Text = _engine.UpdateStatus ?? "";
     }
 
     private void BuildDataSection()
