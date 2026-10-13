@@ -15,7 +15,7 @@ vrijeme zaustavljanja.
 
 Ujutro te sam podsjeti: u zadano vrijeme početka radnog dana (default **8:30**) iskoči
 pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvoriš tek u 9:30,
-nudi i **start od 8:30**, pa se jutro nadoknadi.
+nudi i **start od ranijeg vremena** (8:30, 8:45 … u koracima intervala), pa se jutro nadoknadi.
 Vikendom šuti (može se isključiti).
 
 Jednom dnevno provjeri na GitHubu je li izašla **nova verzija**. Ako je, javi se jednom

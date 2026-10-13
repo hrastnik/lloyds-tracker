@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use gtk4::gdk::Display;
 use gtk4::gio::prelude::*;
 use gtk4::glib;
@@ -143,15 +144,13 @@ impl App {
                     window.focus();
                 }
             }
-            Effect::ShowStartupReminder { day_title, backfill_from } => {
+            Effect::ShowStartupReminder { day_title, start_options } => {
                 if let Some(old) = self.reminder.borrow_mut().take() {
                     old.close();
                 }
                 let me = self.clone();
-                let on_start = move |use_backfill: bool| {
-                    // Točno vrijeme nadoknade računa engine u trenutku klika — prozor je
-                    // mogao prenoćiti, pa bi zapamćeni datum pomaknuo početak na jučer.
-                    me.clone().mutate(move |engine| engine.on_reminder_start(use_backfill));
+                let on_start = move |from: Option<DateTime<Local>>| {
+                    me.clone().mutate(move |engine| engine.on_reminder_start(from));
                 };
                 let me = self.clone();
                 let on_dismiss = move || me.clone().mutate(|engine| engine.on_reminder_dismissed());
@@ -159,7 +158,7 @@ impl App {
                 let window = StartupReminder::new(
                     &self.gtk,
                     &day_title,
-                    backfill_from,
+                    start_options,
                     on_start,
                     on_dismiss,
                 );

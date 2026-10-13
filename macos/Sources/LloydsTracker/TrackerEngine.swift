@@ -456,13 +456,30 @@ final class TrackerEngine: ObservableObject {
     }
 
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — nil kad je opcija
-    /// isključena, kad radni dan još nije počeo ili kad je razmak premali da bi se
-    /// nadoknada uopće razlikovala od starta od sada.
+    /// isključena, kad radni dan još nije počeo ili kad još nije prošao ni jedan cijeli
+    /// interval, pa se nadoknada ne bi razlikovala od starta od sada.
     private func backfillStart(now: Date) -> Date? {
         guard settings.workdayStartBackfillEnabled,
               let start = workdayStart(on: now),
-              now.timeIntervalSince(start) >= 300 else { return nil }
+              start < Self.gridFloor(now, step: interval) else { return nil }
         return start
+    }
+
+    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa svakih
+    /// `interval` minuta, a zadnje je početak trenutnog intervala — od tamo kreće i start
+    /// bez nadoknade, pa zasebni "od sada" ne treba (u 9:42 uz 15 min: 8:30 … 9:15, 9:30).
+    /// Prazno → nema nadoknade.
+    private func backfillOptions(now: Date) -> [Date] {
+        guard let start = backfillStart(now: now) else { return [] }
+        let current = Self.gridFloor(now, step: interval)
+        var options: [Date] = []
+        var t = start
+        while t < current {
+            options.append(t)
+            t = t.addingTimeInterval(interval)
+        }
+        options.append(current)
+        return options
     }
 
     /// Podsjetnik u zadano vrijeme: iskoči kad radni dan počne, a ako je računalo tada
@@ -508,13 +525,10 @@ final class TrackerEngine: ObservableObject {
         updatePopup.close()
         startupReminder.show(
             dayTitle: Fmt.dayTitle.string(from: now),
-            backfillFrom: backfillStart(now: now),
-            // Vrijeme nadoknade se računa u trenutku klika, a ne prikaza — inače bi
-            // podsjetnik koji je prenoćio startao dan od jučerašnjeg početka.
-            onStart: { [weak self] useBackfill in
-                guard let self else { return }
-                self.start(from: useBackfill ? self.backfillStart(now: Date()) : nil)
-            },
+            startOptions: backfillOptions(now: now),
+            // Ako je prozor prenoćio, odabrano vrijeme je jučerašnje — start() ga odbaci i
+            // kreće od sada, pa dan nikad ne počne jučer.
+            onStart: { [weak self] from in self?.start(from: from) },
             onDismiss: {}
         )
     }

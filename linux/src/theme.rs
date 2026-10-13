@@ -122,6 +122,9 @@ button.yellow {{
 }}
 button.yellow:hover {{ background: shade({yellow}, 1.08); }}
 button.yellow:disabled {{ background: alpha({yellow}, 0.35); }}
+/* Strelice ‹ › uz Start u podsjetniku (pomiču početak za jedan interval). */
+button.step {{ padding: 8px 10px; font-size: 15px; }}
+button.step:disabled {{ color: alpha({black}, 0.5); }}
 button.outline {{
     background: transparent; background-image: none;
     color: {gray};

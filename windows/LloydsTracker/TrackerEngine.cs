@@ -481,13 +481,28 @@ public sealed class TrackerEngine : IDisposable
             && date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
 
     /// <summary>The time the reminder offers to backfill from ("Start od 8:30") — null when the
-    /// option is off, when the work day hasn't started yet, or when the gap is too small for the
-    /// backfill to differ from starting now.</summary>
+    /// option is off, when the work day hasn't started yet, or when not even one whole interval has
+    /// passed, so the backfill wouldn't differ from starting now.</summary>
     private DateTime? BackfillStart(DateTime now)
     {
         if (!Settings.WorkdayStartBackfillEnabled) return null;
         if (WorkdayStart(now) is not DateTime start) return null;
-        return (now - start).TotalSeconds >= 300 ? start : null;
+        return start < GridFloor(now, Interval) ? start : null;
+    }
+
+    /// <summary>The times the reminder's ‹ › step the start through: from the start of the work
+    /// day, then every <c>interval</c> minutes, and the last one is the start of the current
+    /// interval — where a start without backfill begins too, so a separate "from now" isn't needed
+    /// (at 9:42 with 15 min: 8:30 … 9:15, 9:30). Empty → no backfill.</summary>
+    private List<DateTime> BackfillOptions(DateTime now)
+    {
+        var options = new List<DateTime>();
+        if (BackfillStart(now) is not DateTime start) return options;
+        var current = GridFloor(now, Interval);
+        for (var t = start; t < current; t = t.AddSeconds(Interval))
+            options.Add(t);
+        options.Add(current);
+        return options;
     }
 
     /// <summary>The reminder at the set time: pops up when the work day begins, or — if the
@@ -530,10 +545,10 @@ public sealed class TrackerEngine : IDisposable
         if (WorkdayStart(now) is DateTime start && now >= start)
             _workdayReminderDayKey = Store.DayKey(now);
         _updatePopup.Close();
-        _startupReminder.Show(Fmt.DayTitle(now), BackfillStart(now),
-            // The backfill time is computed at click time, not at display time — otherwise a
-            // reminder that stayed up overnight would start the day from yesterday's start.
-            onStart: useBackfill => Start(useBackfill ? BackfillStart(DateTime.Now) : null),
+        _startupReminder.Show(Fmt.DayTitle(now), BackfillOptions(now),
+            // If the window stayed up overnight the chosen time is yesterday's — Start() drops it
+            // and starts from now, so the day never begins yesterday.
+            onStart: from => Start(from),
             onDismiss: () => { });
     }
 

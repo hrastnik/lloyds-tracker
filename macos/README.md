@@ -100,13 +100,15 @@ Podsjetnik da se pokrene tracking javlja se na dva načina:
 **Vikendom** (subota i nedjelja) se ne javlja nijedan od njih — opcija *Preskoči vikende*,
 default uključena. Tracking se i vikendom može pokrenuti ručno iz menija.
 
-Uz uključenu **nadoknadu** (default) pop-up nudi izbor kad je radni dan već počeo: *Start od
-8:30* ili *Počni tek od sada*. Nadoknada samo pomiče početak trackanja unatrag — prvi prompt
-onda pita za cijelo jutro (8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
+Uz uključenu **nadoknadu** (default) pop-up, kad je radni dan već počeo, nudi *Start od
+8:30*, a strelice ‹ › uz gumb pomiču početak za jedan interval (uz 15 min u 9:42: 8:30,
+8:45 … 9:15, 9:30). Zadnji korak je početak trenutnog intervala — isto što i start od sada.
+Nadoknada samo pomiče početak trackanja unatrag — prvi prompt onda pita za cijelo jutro
+(8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
 Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, kreće se od kraja
 zadnjeg unosa. Nadoknada se uvijek odnosi na **današnji** dan: pop-up čeka odgovor koliko
 treba, pa se onaj koji ostane otvoren (preko noći ili od prije 8:30) u zadano vrijeme
-osvježi — *Start od 8:30* nikad ne vuče početak na jučer.
+osvježi — nadoknada nikad ne vuče početak na jučer.
 
 ### Odsutnost
 

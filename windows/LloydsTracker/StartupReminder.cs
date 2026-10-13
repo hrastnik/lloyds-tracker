@@ -19,22 +19,20 @@ internal sealed class StartupReminderController
     public DateTime? ShownAt { get; private set; }
     public DateTime? ShownBackfillFrom { get; private set; }
 
-    /// <summary><paramref name="backfillFrom"/> (a start of the work day that has already passed)
-    /// adds the choice between starting from that time or only from now. <paramref name="onStart"/>
-    /// gets only whether the backfill was chosen — the exact time is computed by the engine at
-    /// click time, because the window waits for an answer and may stay up overnight, when a
-    /// remembered date would move the start back to yesterday.</summary>
-    public void Show(string dayTitle, DateTime? backfillFrom, Action<bool> onStart, Action onDismiss)
+    /// <summary><paramref name="startOptions"/> (from a start of the work day that has already
+    /// passed up to the start of the current interval, in interval steps) adds ‹ › arrows that move
+    /// the start. <paramref name="onStart"/> gets the chosen time, or null to start from now.</summary>
+    public void Show(string dayTitle, IReadOnlyList<DateTime> startOptions, Action<DateTime?> onStart, Action onDismiss)
     {
         if (IsVisible) return;
-        var form = new StartupReminderForm(dayTitle, backfillFrom,
-            onStart: useBackfill => { Close(); onStart(useBackfill); },
+        var form = new StartupReminderForm(dayTitle, startOptions,
+            onStart: from => { Close(); onStart(from); },
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
         form.FormClosed += (_, _) => { if (_form == form) Forget(); };
         form.Appear();
         ShownAt = DateTime.Now;
-        ShownBackfillFrom = backfillFrom;
+        ShownBackfillFrom = startOptions.Count > 0 ? startOptions[0] : null;
     }
 
     public void Close()
@@ -53,17 +51,21 @@ internal sealed class StartupReminderController
 
 internal sealed class StartupReminderForm : Form
 {
-    /// <summary>The parameter is "with backfill" (true) or "only from now" (false).</summary>
-    private readonly Action<bool> _onStart;
+    /// <summary>The parameter is the chosen time, or null to start from now.</summary>
+    private readonly Action<DateTime?> _onStart;
     private readonly Action _onDismiss;
-    /// <summary>Set → the morning backfill (start from the beginning of the work day) is offered too.</summary>
-    private readonly DateTime? _backfillFrom;
+    /// <summary>Not empty → the morning backfill is offered too: the arrows move the start from the
+    /// start of the work day up to the start of the current interval, in interval steps.</summary>
+    private readonly IReadOnlyList<DateTime> _startOptions;
+    /// <summary>Index into <see cref="_startOptions"/>. The default is the start of the work day —
+    /// that's the reason the pop-up appeared at the set time in the first place.</summary>
+    private int _selection;
 
-    public StartupReminderForm(string dayTitle, DateTime? backfillFrom, Action<bool> onStart, Action onDismiss)
+    public StartupReminderForm(string dayTitle, IReadOnlyList<DateTime> startOptions, Action<DateTime?> onStart, Action onDismiss)
     {
         _onStart = onStart;
         _onDismiss = onDismiss;
-        _backfillFrom = backfillFrom;
+        _startOptions = startOptions;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -99,34 +101,52 @@ internal sealed class StartupReminderForm : Form
         Controls.Add(title);
         y += title.Height + Brand.S(6);
 
-        string subtitleText = _backfillFrom is DateTime startFrom
-            ? $"Radni dan počinje u {Fmt.Hhmm(startFrom)}, a tracking još nije pokrenut. Mogu ga voditi od tada (pa te prvi prompt pita i za jutro) ili tek od sada."
+        string subtitleText = _startOptions.Count > 0
+            ? $"Radni dan počinje u {Fmt.Hhmm(_startOptions[0])}, a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
             : "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.";
         var subtitle = new Label { AutoSize = false, Text = subtitleText, Font = Brand.Ui(9f), ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(pad, y), Width = innerW };
         subtitle.Height = TextRenderer.MeasureText(subtitle.Text, subtitle.Font, new Size(innerW, int.MaxValue), TextFormatFlags.WordBreak).Height + Brand.S(2);
         Controls.Add(subtitle);
         y += subtitle.Height + Brand.S(16);
 
-        // With a backfill the primary button starts from the beginning of the work day — that's
-        // the reason the pop-up appeared at the set time in the first place.
-        string startText = _backfillFrom is DateTime backfill ? $"Start od {Fmt.Hhmm(backfill)}" : "Start — počni radni dan";
-        var start = new FlatButton { Text = startText, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
-        start.Click += (_, _) => _onStart(_backfillFrom != null);
+        // The time sits in the Start button itself and ‹ › move it by one interval — one click for
+        // the default, no separate picker.
+        int h = Brand.S(40);
+        int left = pad;
+        int right = pad + innerW - Brand.S(88) - Brand.S(10);
+        FlatButton? back = null, forward = null;
+        if (_startOptions.Count > 0)
+        {
+            back = StepButton("‹", new Point(left, y), h);
+            forward = StepButton("›", new Point(right - back.Width, y), h);
+            left = back.Right + Brand.S(2);
+            right = forward.Left - Brand.S(2);
+        }
+
+        var start = new FlatButton { Text = StartTitle(), Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(right - left, h), Location = new Point(left, y) };
+        start.Click += (_, _) => _onStart(SelectedStart());
         Controls.Add(start);
+
+        if (back is FlatButton stepBack && forward is FlatButton stepForward)
+        {
+            void ShowSelection()
+            {
+                start.Text = StartTitle();
+                start.Invalidate();
+                SetStepEnabled(stepBack, _selection > 0);
+                SetStepEnabled(stepForward, _selection < _startOptions.Count - 1);
+            }
+            stepBack.Click += (_, _) => { if (_selection > 0) { _selection--; ShowSelection(); } };
+            stepForward.Click += (_, _) => { if (_selection < _startOptions.Count - 1) { _selection++; ShowSelection(); } };
+            Controls.Add(stepBack);
+            Controls.Add(stepForward);
+            ShowSelection();
+        }
 
         var later = new FlatButton { Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
         later.Click += (_, _) => _onDismiss();
         Controls.Add(later);
         y += Brand.S(40);
-
-        if (_backfillFrom != null)
-        {
-            y += Brand.S(10);
-            var startNow = new FlatButton { Text = "Počni tek od sada", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(innerW, Brand.S(36)), Location = new Point(pad, y) };
-            startNow.Click += (_, _) => _onStart(false);
-            Controls.Add(startNow);
-            y += Brand.S(36);
-        }
         y += pad;
 
         ClientSize = new Size(ClientSize.Width, y);
@@ -134,6 +154,26 @@ internal sealed class StartupReminderForm : Form
         var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Top + Brand.S(24));
         Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
+    }
+
+    private DateTime? SelectedStart()
+        => _selection >= 0 && _selection < _startOptions.Count ? _startOptions[_selection] : null;
+
+    private string StartTitle()
+        => SelectedStart() is DateTime from ? $"Start od {Fmt.Hhmm(from)}" : "Start — počni radni dan";
+
+    /// <summary>Arrow next to the Start button — moves the start by one interval.</summary>
+    private static FlatButton StepButton(string glyph, Point location, int height)
+        => new() { Text = glyph, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(12f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(Brand.S(30), height), Location = location };
+
+    private static void SetStepEnabled(FlatButton button, bool enabled)
+    {
+        button.Enabled = enabled;
+        button.Fill = enabled ? Palette.Yellow : Palette.Yellow.OverBlack(0.35);
+        // Black at 50 % over the dimmed yellow, flattened — GDI text doesn't blend.
+        button.TextColor = enabled ? Palette.Black : Palette.Yellow.OverBlack(0.175);
+        button.Cursor = enabled ? Cursors.Hand : Cursors.Default;
+        button.Invalidate();
     }
 
     /// <summary>Pop-up ne uzima tipkovnicu odmah — vidi <see cref="PanelFade"/>.</summary>

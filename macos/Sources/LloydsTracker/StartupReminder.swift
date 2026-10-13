@@ -13,24 +13,23 @@ final class StartupReminderController {
 
     var isVisible: Bool { window != nil }
 
-    /// `backfillFrom` (početak radnog dana koji je već prošao) dodaje izbor: start od tog
-    /// vremena ili tek od sada. `onStart` dobije samo je li odabrana nadoknada — točno
-    /// vrijeme računa engine u trenutku klika, jer prozor čeka odgovor i može prenoćiti,
-    /// pa bi zapamćeni datum tada pomaknuo početak na jučer.
+    /// `startOptions` (od početka radnog dana koji je već prošao do početka trenutnog
+    /// intervala, u koracima intervala) dodaje strelice ‹ › kojima se pomiče početak.
+    /// `onStart` dobije odabrano vrijeme ili nil za start od sada.
     func show(
         dayTitle: String,
-        backfillFrom: Date?,
-        onStart: @escaping (Bool) -> Void,
+        startOptions: [Date],
+        onStart: @escaping (Date?) -> Void,
         onDismiss: @escaping () -> Void
     ) {
         guard window == nil else { return }
 
         let view = StartupReminderView(
             dayTitle: dayTitle,
-            backfillFrom: backfillFrom,
-            onStart: { [weak self] useBackfill in
+            startOptions: startOptions,
+            onStart: { [weak self] from in
                 self?.close()
-                onStart(useBackfill)
+                onStart(from)
             },
             onDismiss: { [weak self] in
                 self?.close()
@@ -61,7 +60,7 @@ final class StartupReminderController {
         PanelFade.appear(panel)
         window = panel
         shownAt = Date()
-        shownBackfillFrom = backfillFrom
+        shownBackfillFrom = startOptions.first
     }
 
     func close() {
@@ -74,11 +73,20 @@ final class StartupReminderController {
 
 struct StartupReminderView: View {
     let dayTitle: String
-    /// Postavljeno → nudi se i nadoknada jutra (start od početka radnog dana).
-    let backfillFrom: Date?
-    /// Parametar je "s nadoknadom" (true) ili "tek od sada" (false).
-    let onStart: (Bool) -> Void
+    /// Nije prazno → nudi se i nadoknada jutra: početak se strelicama pomiče od početka
+    /// radnog dana do početka trenutnog intervala, u koracima intervala.
+    let startOptions: [Date]
+    /// Parametar je odabrano vrijeme ili nil za start od sada.
+    let onStart: (Date?) -> Void
     let onDismiss: () -> Void
+
+    /// Indeks u `startOptions`. Zadano je početak radnog dana — to je razlog zašto je
+    /// pop-up uopće iskočio u zadano vrijeme.
+    @State private var selection = 0
+
+    private var selectedStart: Date? {
+        startOptions.indices.contains(selection) ? startOptions[selection] : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -108,16 +116,20 @@ struct StartupReminderView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 10) {
-                HStack(spacing: 10) {
-                    // Uz nadoknadu je primarni gumb start od početka radnog dana — to je
-                    // razlog zašto je pop-up uopće iskočio u zadano vrijeme.
-                    Button { onStart(backfillFrom != nil) } label: {
+            HStack(spacing: 10) {
+                // Vrijeme je u samom gumbu, a ‹ › ga pomiču za jedan interval — jedan klik
+                // za zadano, bez zasebnog izbornika.
+                HStack(spacing: 2) {
+                    if !startOptions.isEmpty {
+                        stepButton("chevron.left", enabled: selection > 0) { selection -= 1 }
+                    }
+                    Button { onStart(selectedStart) } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 11, weight: .bold))
-                            Text(backfillFrom.map { "Start od \(Fmt.hhmm($0))" } ?? "Start — počni radni dan")
+                            Text(startTitle)
                                 .font(.system(size: 13, weight: .bold))
+                                .monospacedDigit()
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
@@ -125,35 +137,23 @@ struct StartupReminderView: View {
                         .foregroundStyle(Color.lloydsBlack)
                     }
                     .buttonStyle(.plain)
-
-                    Button(action: onDismiss) {
-                        Text("Kasnije")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color.lloydsGray)
-                            .padding(.vertical, 10)
-                            .padding(.horizontal, 16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                            )
+                    if !startOptions.isEmpty {
+                        stepButton("chevron.right", enabled: selection < startOptions.count - 1) { selection += 1 }
                     }
-                    .buttonStyle(.plain)
                 }
 
-                if backfillFrom != nil {
-                    Button { onStart(false) } label: {
-                        Text("Počni tek od sada")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.lloydsGray)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                Button(action: onDismiss) {
+                    Text("Kasnije")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.lloydsGray)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                        )
                 }
+                .buttonStyle(.plain)
             }
         }
         .padding(22)
@@ -170,10 +170,28 @@ struct StartupReminderView: View {
         .onExitCommand(perform: onDismiss)
     }
 
+    private var startTitle: String {
+        selectedStart.map { "Start od \(Fmt.hhmm($0))" } ?? "Start — počni radni dan"
+    }
+
+    /// Strelica uz gumb Start — pomiče početak za jedan interval.
+    private func stepButton(_ systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .heavy))
+                .frame(width: 30)
+                .padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.lloydsYellow.opacity(enabled ? 1 : 0.35)))
+                .foregroundStyle(Color.lloydsBlack.opacity(enabled ? 1 : 0.5))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
     private var subtitle: String {
-        guard let from = backfillFrom else {
+        guard let from = startOptions.first else {
             return "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme."
         }
-        return "Radni dan počinje u \(Fmt.hhmm(from)), a tracking još nije pokrenut. Mogu ga voditi od tada (pa te prvi prompt pita i za jutro) ili tek od sada."
+        return "Radni dan počinje u \(Fmt.hhmm(from)), a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
     }
 }

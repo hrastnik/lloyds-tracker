@@ -56,7 +56,7 @@ pub enum Effect {
     FocusPrompt,
     ShowStartupReminder {
         day_title: String,
-        backfill_from: Option<DateTime<Local>>,
+        start_options: Vec<DateTime<Local>>,
     },
     CloseStartupReminder,
     ShowAutoStopWarning {
@@ -569,14 +569,32 @@ impl TrackerEngine {
     }
 
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — None kad je opcija
-    /// isključena, kad radni dan još nije počeo ili kad je razmak premali da bi se
-    /// nadoknada uopće razlikovala od starta od sada.
+    /// isključena, kad radni dan još nije počeo ili kad još nije prošao ni jedan cijeli
+    /// interval, pa se nadoknada ne bi razlikovala od starta od sada.
     fn backfill_start(&self, now: DateTime<Local>) -> Option<DateTime<Local>> {
         if !self.settings.workday_start_backfill_enabled {
             return None;
         }
         let start = self.workday_start(now)?;
-        ((now - start).num_seconds() >= 300).then_some(start)
+        (start < grid_floor(now, self.interval_seconds())).then_some(start)
+    }
+
+    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa svakih
+    /// `interval` minuta, a zadnje je početak trenutnog intervala — od tamo kreće i start
+    /// bez nadoknade, pa zasebni "od sada" ne treba (u 9:42 uz 15 min: 8:30 … 9:15, 9:30).
+    /// Prazno → nema nadoknade.
+    fn backfill_options(&self, now: DateTime<Local>) -> Vec<DateTime<Local>> {
+        let Some(start) = self.backfill_start(now) else { return Vec::new() };
+        let current = grid_floor(now, self.interval_seconds());
+        let step = Duration::seconds(self.interval_seconds());
+        let mut options = Vec::new();
+        let mut t = start;
+        while t < current {
+            options.push(t);
+            t += step;
+        }
+        options.push(current);
+        options
     }
 
     /// Podsjetnik u zadano vrijeme: iskoči kad radni dan počne, a ako je računalo tada
@@ -636,27 +654,27 @@ impl TrackerEngine {
                 self.workday_reminder_day_key = Some(Store::day_key(now));
             }
         }
-        let backfill_from = self.backfill_start(now);
+        let start_options = self.backfill_options(now);
         self.effects.push(Effect::CloseUpdatePopup);
         self.reminder_visible = true;
         self.reminder_shown_at = Some(Local::now());
-        self.reminder_backfill_from = backfill_from;
+        self.reminder_backfill_from = start_options.first().copied();
         self.effects.push(Effect::ShowStartupReminder {
             day_title: Fmt::day_title(now),
-            backfill_from,
+            start_options,
         });
     }
 
     // MARK: - Povratne informacije iz UI sloja
 
-    /// Podsjetnik: Start. Vrijeme nadoknade se računa u trenutku klika, a ne prikaza —
-    /// inače bi podsjetnik koji je prenoćio startao dan od jučerašnjeg početka.
-    pub fn on_reminder_start(&mut self, use_backfill: bool) {
+    /// Podsjetnik: Start od odabranog vremena (None = od sada). Ako je prozor prenoćio,
+    /// odabrano vrijeme je jučerašnje — `start` ga odbaci i kreće od sada, pa dan nikad ne
+    /// počne jučer.
+    pub fn on_reminder_start(&mut self, from: Option<DateTime<Local>>) {
         self.reminder_visible = false;
         self.reminder_shown_at = None;
         self.reminder_backfill_from = None;
-        let backfill = if use_backfill { self.backfill_start(Local::now()) } else { None };
-        self.start(backfill);
+        self.start(from);
     }
 
     pub fn on_reminder_dismissed(&mut self) {
