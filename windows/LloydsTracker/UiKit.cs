@@ -211,9 +211,26 @@ internal sealed class FlatButton : Control
     public string? SubText { get; set; }
     public Font? SubFont { get; set; }
     public Color SubColor { get; set; } = Palette.Gray;
+    /// <summary>Podloga pod mišem umjesto automatski izračunate (npr. žuta pločica iza strelice
+    /// koja inače nema podlogu).</summary>
+    public Color? HoverFill { get; set; }
 
     private bool _hover;
     private bool _down;
+
+    // ControlPaint.Light/Dark vraćaju neprozirnu boju — prozirna žuta podloga (12 %) bi pod
+    // mišem postala puna žuta i progutala žuti tekst. Zato prozirna podloga samo malo
+    // pojača pokrivenost, a puna se pomiješa prema bijeloj/crnoj.
+    private static Color Hovered(Color c) => c.A < 255 ? Stronger(c, 20) : Mix(c, Color.White, 0.08);
+    private static Color Pressed(Color c) => c.A < 255 ? Stronger(c, 36) : Mix(c, Color.Black, 0.08);
+
+    private static Color Stronger(Color c, int alpha) => Color.FromArgb(Math.Min(255, c.A + alpha), c.R, c.G, c.B);
+
+    private static Color Mix(Color c, Color to, double t) => Color.FromArgb(
+        c.A,
+        (int)Math.Round(c.R + (to.R - c.R) * t),
+        (int)Math.Round(c.G + (to.G - c.G) * t),
+        (int)Math.Round(c.B + (to.B - c.B) * t));
 
     public FlatButton()
     {
@@ -237,11 +254,11 @@ internal sealed class FlatButton : Control
         var r = new RectangleF(BorderWidth / 2f, BorderWidth / 2f, Width - BorderWidth, Height - BorderWidth);
         using var path = Brand.RoundedRect(r, Brand.Sf(CornerRadius));
 
-        var fill = Fill;
+        var fill = _hover && HoverFill is Color hoverFill ? hoverFill : Fill;
         if (fill.A > 0)
         {
-            if (_down) fill = ControlPaint.Dark(fill, 0.05f);
-            else if (_hover) fill = ControlPaint.Light(fill, 0.08f);
+            if (_down) fill = Pressed(fill);
+            else if (_hover && HoverFill == null) fill = Hovered(fill);
             using var b = new SolidBrush(fill);
             g.FillPath(b, path);
         }

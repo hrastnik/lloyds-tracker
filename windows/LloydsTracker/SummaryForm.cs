@@ -129,7 +129,7 @@ internal sealed class SummaryForm : Form
     {
         var button = new FlatButton
         {
-            Text = glyph, TextColor = Palette.Yellow, Fill = Palette.Black, CornerRadius = 8,
+            Text = glyph, TextColor = Palette.Yellow, HoverFill = Palette.Yellow.With(0.12), CornerRadius = 8,
             Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(44), Brand.S(34)),
         };
         _tips.SetToolTip(button, tip);
