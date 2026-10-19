@@ -306,7 +306,7 @@ final class TrackerEngine: ObservableObject {
     /// Ispravlja unos(e) iza jednog reda kronološkog pregleda. Ako su vremena ostala ista,
     /// mijenja se samo opis i vrsta svih blokova reda (spojeni red ostaje spojen). Ako su
     /// vremena promijenjena, red postaje **jedan** unos — novi raspon se ne može smisleno
-    /// razdijeliti na stare granice blokova.
+    /// razdijeliti na stare granice blokova — a preklopljeni dio drugih unosa se reže.
     func updateEntries(
         row: ChronoRow,
         dayKey: String,
@@ -324,6 +324,7 @@ final class TrackerEngine: ObservableObject {
         func apply(to day: inout [Entry]) {
             if timesChanged {
                 day.removeAll { ids.contains($0.id) }
+                Summarize.carve(&day, start: start, end: end)
                 day.append(Entry(id: row.ids[0], start: start, end: end, text: clean, kind: kind))
             } else {
                 for i in day.indices where ids.contains(day[i].id) {
@@ -343,6 +344,31 @@ final class TrackerEngine: ObservableObject {
             Store.saveDay(dayKey, entries: day)
             objectWillChange.send()
         }
+        if kind == .work, clean != row.text { pushHistory(clean) }
+    }
+
+    /// Ručno dodan unos iz kronološkog pregleda (npr. popunjavanje rupe). Preklopljeni
+    /// dio postojećih unosa se reže — novi unos ima prednost.
+    func addEntry(dayKey: String, text: String, start: Date, end: Date, kind: EntryKind) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, end > start else { return }
+
+        func apply(to day: inout [Entry]) {
+            Summarize.carve(&day, start: start, end: end)
+            day.append(Entry(start: start, end: end, text: clean, kind: kind))
+            day.sort { $0.start < $1.start }
+        }
+
+        if dayKey == currentDayKey {
+            apply(to: &entries)
+            Store.saveDay(currentDayKey, entries: entries)
+        } else {
+            var day = Store.loadDay(dayKey)
+            apply(to: &day)
+            Store.saveDay(dayKey, entries: day)
+            objectWillChange.send()
+        }
+        if kind == .work { pushHistory(clean) }
     }
 
     /// Sljedeći prompt poravnat s početkom sata (npr. 15 min → :00, :15, :30, :45).

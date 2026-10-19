@@ -73,7 +73,11 @@ internal sealed class PromptTextField : Control
     public event Action? HistoryNewer;
     public event Action? EscapeRequested;
     public event Action<PromptTextField>? FocusChanged;
+    public event Action? FocusLost;
     public event Action? ValueChanged;
+
+    /// <summary>Obrub mimo fokusa — npr. narančasti kad upisano vrijeme ne valja.</summary>
+    public Color? BorderOverride { get; set; }
 
     private bool _focused;
 
@@ -97,7 +101,7 @@ internal sealed class PromptTextField : Control
             PlaceholderText = placeholder,
         };
         _box.GotFocus += (_, _) => { _focused = true; Invalidate(); FocusChanged?.Invoke(this); };
-        _box.LostFocus += (_, _) => { _focused = false; Invalidate(); };
+        _box.LostFocus += (_, _) => { _focused = false; Invalidate(); FocusLost?.Invoke(); };
         _box.TextChanged += (_, _) => ValueChanged?.Invoke();
         _box.KeyDown += OnBoxKeyDown;
         Controls.Add(_box);
@@ -112,6 +116,15 @@ internal sealed class PromptTextField : Control
     {
         get => _box.Text;
         set => _box.Text = value;
+    }
+
+    /// <summary>Polje za vrijeme u uređivaču unosa: centrirani monospace "09:30".</summary>
+    public void UseTimeStyle()
+    {
+        _box.Font = Brand.Mono(10.5f, FontStyle.Bold);
+        _box.TextAlign = HorizontalAlignment.Center;
+        Height = _box.Font.Height + _pad * 2;
+        OnSizeChanged(EventArgs.Empty);
     }
 
     public void FocusBox()
@@ -161,7 +174,7 @@ internal sealed class PromptTextField : Control
         var r = new RectangleF(0.5f, 0.5f, Width - 1, Height - 1);
         using var path = Brand.RoundedRect(r, Brand.Sf(10));
         using (var b = new SolidBrush(_fieldFill)) g.FillPath(b, path);
-        using var pen = new Pen(Palette.Yellow.With(_focused ? 0.8 : 0.25), 1f);
+        using var pen = new Pen(BorderOverride ?? Palette.Yellow.With(_focused ? 0.8 : 0.25), 1f);
         g.DrawPath(pen, path);
     }
 }

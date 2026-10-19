@@ -108,6 +108,7 @@ struct UpdatePopupView: View {
                             RoundedRectangle(cornerRadius: 10)
                                 .stroke(Color.white.opacity(0.2), lineWidth: 1)
                         )
+                        .clickArea(cornerRadius: 10)
                 }
                 .buttonStyle(.plain)
             }

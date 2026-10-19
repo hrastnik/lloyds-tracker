@@ -101,10 +101,19 @@ prompt iskoči u svoje vrijeme (10:15, 10:30…) kao i inače.
 
 ### Pregled dana
 
-Svaki red u tabu **Kronološki** ima `✎` — **Ispravi unos**: opis (uz padajući izbor iz
-povijesti), vrijeme *od*/*do* i vrsta (rad/pauza). Radi i za prijašnje dane. Kod spojenog reda
+Klik na bilo koji red u tabu **Kronološki** otvara **uređivač na mjestu reda**: vrijeme
+*od*/*do* upisuje se rukom (`9:30`, `930`, `9`…; strelice ↑/↓ pomiču za 5 min), uz opis (s
+izborom iz povijesti) i vrstu (rad/pauza). Trajanje se računa uživo, Enter sprema, Esc
+odustaje, a **Obriši** je u istom uređivaču. Radi i za prijašnje dane. Kod spojenog reda
 (`2×`) promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan
-unos** — novi raspon nema stare granice blokova (prozor na to i upozori).
+unos** — novi raspon nema stare granice blokova (uređivač na to i upozori).
+
+**Dodavanje unosa:** nezabilježeno vrijeme između unosa (≥ 1 min) prikazuje se kao
+isprekidani red `+ 10:15–10:45 nezabilježeno · 30m` — klik ga popuni novim unosom. Gumb
+**+ Dodaj unos** na dnu (i u praznom danu) predlaže raspon od kraja zadnjeg unosa (ili
+početka radnog dana) u trajanju jednog intervala. Ako se novi ili ispravljeni unos preklapa
+s drugima, **on ima prednost**: preklopljeni dio ostalih unosa se odreže (ili ih razdvoji
+ili makne) — uređivač prije spremanja javi s koliko se unosa preklapa.
 
 U tabu **Kronološki** opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -239,8 +248,8 @@ linux/src/
 ├── tray.rs             # ksni Tray: meni, snapshot, naredbe prema aplikaciji
 ├── icon.rs             # cairo brand pločica: ikone u traci po stanju
 ├── prompt.rs           # floating panel / fullscreen prompt + traka blokova
-├── summary.rs          # pregled dana, copy/CSV export, ispravak/brisanje
-├── entry_edit.rs       # prozor za ispravak unosa (Pregled dana → Kronološki)
+├── summary.rs          # pregled dana, copy/CSV export, ispravak/dodavanje/brisanje
+├── entry_edit.rs       # uređivač unosa na mjestu reda (Pregled dana → Kronološki)
 ├── settings_window.rs  # postavke (3 taba)
 ├── startup_reminder.rs # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── auto_stop.rs        # upozorenje 1 min prije auto-stopa + produženja
@@ -272,7 +281,7 @@ linux/src/
 | `NSPasteboard` | `gtk::Widget::clipboard()` |
 | `NSSavePanel` | `gtk::FileDialog` |
 | `PanelFade` (`NSAnimationContext` + odgođeni `makeKey`) | `ui::PanelFade` (`set_opacity` u `glib::timeout` + odgođeno hvatanje tipki) |
-| `.sheet` (ispravak unosa) | modalni `gtk::Window` (`transient_for`) |
+| `EntryEditor` (uređivač u listi, `@State draft`) | `EntryEditor` (`GtkBox`); sadržaj se ne slaže iznova dok je otvoren ni kad se podaci nisu promijenili (tick svake sekunde) |
 | SwiftUI `DatePicker(.hourAndMinute)` | dva `SpinButton`-a (sat + minuta) |
 | `.help(…)` tooltip | `set_tooltip_text` |
 | `UpdateChecker.swift` (`URLSession`) | `update.rs` (`ureq` na pomoćnom threadu, rezultat kanalom na GTK thread) |

@@ -3,10 +3,12 @@ use std::rc::Rc;
 
 use chrono::{DateTime, Duration, Local};
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, CheckButton, PolicyType, ScrolledWindow, ToggleButton, Window};
+use gtk4::{
+    Align, Box as GtkBox, Button, CheckButton, PolicyType, ScrolledWindow, ToggleButton, Window,
+};
 
-use crate::entry_edit::EntryEditWindow;
-use crate::models::{ChronoRow, Entry, EntryKind, Summarize};
+use crate::entry_edit::{EditTarget, EntryEditor};
+use crate::models::{ChronoRow, Entry, EntryKind, Summarize, TimelineItem};
 use crate::store::Store;
 use crate::theme::Fmt;
 use crate::ui;
@@ -16,6 +18,17 @@ use crate::App;
 enum Mode {
     Grouped,
     Chronological,
+}
+
+/// Ono što je zadnje nacrtano u sadržaju. Pregled se osvježava svake sekunde (tick ide
+/// kroz `mutate`), a ponovno slaganje istih redova bi gubilo klikove i hover — zato se
+/// sadržaj slaže samo kad se ovo promijeni.
+#[derive(PartialEq)]
+struct Rendered {
+    day_key: String,
+    mode: Mode,
+    merging: bool,
+    entries: Vec<Entry>,
 }
 
 /// Pregled dana — grupirano po opisu ili kronološki, s kopiranjem i CSV exportom.
@@ -30,7 +43,12 @@ pub struct SummaryWindow {
     merge_row: GtkBox,
     merge_check: CheckButton,
     content: GtkBox,
-    next_button: gtk4::Button,
+    next_button: Button,
+    chrono_toggle: ToggleButton,
+    /// Otvoren uređivač u kronološkom prikazu — dok je otvoren, sadržaj se ne slaže
+    /// ponovno (tick bi ga inače uništio usred tipkanja).
+    editor: RefCell<Option<Rc<EntryEditor>>>,
+    rendered: RefCell<Option<Rendered>>,
 }
 
 impl SummaryWindow {
@@ -53,8 +71,8 @@ impl SummaryWindow {
         title.set_halign(Align::Center);
         title.set_hexpand(true);
         title.set_xalign(0.5);
-        let prev_button = ui::button("‹", &["link"], || {});
-        let next_button = ui::button("›", &["link"], || {});
+        let prev_button = day_button("‹", "Prethodni dan");
+        let next_button = day_button("›", "Sljedeći dan");
         nav.append(&prev_button);
         nav.append(&title);
         nav.append(&next_button);
@@ -116,6 +134,9 @@ impl SummaryWindow {
             merge_check: merge_check.clone(),
             content,
             next_button: next_button.clone(),
+            chrono_toggle: chrono_toggle.clone(),
+            editor: RefCell::new(None),
+            rendered: RefCell::new(None),
         });
 
         // MARK: Podnožje
@@ -142,24 +163,17 @@ impl SummaryWindow {
         // MARK: Vezanje kontrola
         {
             let me = summary.clone();
-            prev_button.connect_clicked(move |_| {
-                let new = *me.date.borrow() - Duration::days(1);
-                *me.date.borrow_mut() = new;
-                me.refresh();
-            });
+            prev_button.connect_clicked(move |_| me.shift_day(-1));
         }
         {
             let me = summary.clone();
-            next_button.connect_clicked(move |_| {
-                let new = *me.date.borrow() + Duration::days(1);
-                *me.date.borrow_mut() = new;
-                me.refresh();
-            });
+            next_button.connect_clicked(move |_| me.shift_day(1));
         }
         {
             let me = summary.clone();
             grouped_toggle.connect_toggled(move |b| {
                 if b.is_active() {
+                    me.close_editor(false);
                     *me.mode.borrow_mut() = Mode::Grouped;
                     me.refresh();
                 }
@@ -169,6 +183,7 @@ impl SummaryWindow {
             let me = summary.clone();
             chrono_toggle.connect_toggled(move |b| {
                 if b.is_active() {
+                    me.close_editor(false);
                     *me.mode.borrow_mut() = Mode::Chronological;
                     me.refresh();
                 }
@@ -178,6 +193,10 @@ impl SummaryWindow {
             let me = summary.clone();
             merge_check.connect_toggled(move |b| {
                 let on = b.is_active();
+                if on == me.app.engine.borrow().settings.merge_adjacent_entries {
+                    return;
+                }
+                me.close_editor(false);
                 let settings = {
                     let mut s = me.app.engine.borrow().settings.clone();
                     s.merge_adjacent_entries = on;
@@ -208,6 +227,13 @@ impl SummaryWindow {
         }
     }
 
+    fn shift_day(self: &Rc<Self>, days: i64) {
+        self.close_editor(false);
+        let new = *self.date.borrow() + Duration::days(days);
+        *self.date.borrow_mut() = new;
+        self.refresh();
+    }
+
     pub fn refresh(self: &Rc<Self>) {
         let date = *self.date.borrow();
         let entries = self.entries();
@@ -226,21 +252,41 @@ impl SummaryWindow {
             self.merge_check.set_active(merge);
         }
 
+        if self.editor.borrow().is_some() {
+            return;
+        }
+        let rendered = Rendered { day_key: self.day_key(), mode, merging: merge, entries };
+        if self.rendered.borrow().as_ref() == Some(&rendered) {
+            return;
+        }
+        self.render(&rendered);
+        *self.rendered.borrow_mut() = Some(rendered);
+    }
+
+    fn render(self: &Rc<Self>, state: &Rendered) {
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
+        let entries = &state.entries;
 
-        if entries.is_empty() {
-            let empty = ui::label("Nema unosa za ovaj dan.", &["muted"]);
-            empty.set_halign(Align::Center);
+        if entries.is_empty() && self.editor.borrow().is_none() {
+            let empty = ui::vbox(12);
+            empty.set_valign(Align::Center);
             empty.set_vexpand(true);
+            let text = ui::label("Nema unosa za ovaj dan.", &["muted"]);
+            text.set_halign(Align::Center);
+            empty.append(&text);
+            let add = self.add_button();
+            add.set_halign(Align::Center);
+            add.set_size_request(200, -1);
+            empty.append(&add);
             self.content.append(&empty);
             return;
         }
 
-        match mode {
+        match state.mode {
             Mode::Grouped => {
-                for group in Summarize::groups(&entries) {
+                for group in Summarize::groups(entries) {
                     let row = ui::vbox(4);
                     let head = ui::hbox(8);
                     let total = ui::label(&Fmt::dur(group.total), &["mono", "accent"]);
@@ -265,81 +311,199 @@ impl SummaryWindow {
                 }
             }
             Mode::Chronological => {
-                let merging = self.app.engine.borrow().settings.merge_adjacent_entries;
-                for chrono_row in Summarize::chronology(&entries, merging) {
-                    let row = ui::hbox(10);
-                    row.append(&ui::label(
-                        &format!("{}–{}", Fmt::hhmm(chrono_row.start), Fmt::hhmm(chrono_row.end)),
-                        &["mono", "muted"],
-                    ));
-                    let text = ui::label(&chrono_row.text, &[]);
-                    if chrono_row.kind == EntryKind::Pause {
-                        text.add_css_class("pause-text");
+                let editor = self.editor.borrow().clone();
+                let target = editor.as_ref().map(|e| e.target().clone());
+                let rows = Summarize::chronology(entries, state.merging);
+                for item in Summarize::timeline(&rows) {
+                    match item {
+                        TimelineItem::Row(row) => match &editor {
+                            Some(e) if target.as_ref().and_then(|t| t.row()) == Some(&row) => {
+                                self.content.append(e.widget());
+                            }
+                            _ => self.content.append(&self.chrono_row(&row)),
+                        },
+                        TimelineItem::Gap(start, end) => match &editor {
+                            Some(e) if target == Some(EditTarget::New { gap_start: Some(start) }) => {
+                                self.content.append(e.widget());
+                            }
+                            _ => self.content.append(&self.gap_row(start, end)),
+                        },
                     }
-                    row.append(&text);
-                    row.append(&ui::spacer());
-                    if chrono_row.is_merged() {
-                        row.append(&ui::label(
-                            &format!("{}×", chrono_row.ids.len()),
-                            &["mono", "accent"],
-                        ));
+                }
+                match &editor {
+                    Some(e) if target == Some(EditTarget::New { gap_start: None }) => {
+                        self.content.append(e.widget());
                     }
-                    row.append(&ui::label(&Fmt::dur(chrono_row.duration()), &["mono", "muted-dim"]));
-
-                    let me = self.clone();
-                    let editable = chrono_row.clone();
-                    let edit = ui::button("✎", &["link"], move || me.edit_entry(&editable));
-                    edit.set_tooltip_text(Some(if chrono_row.is_merged() {
-                        "Ispravi unos (više blokova)"
-                    } else {
-                        "Ispravi unos"
-                    }));
-                    row.append(&edit);
-
-                    let ids = chrono_row.ids.clone();
-                    let key = self.day_key();
-                    let me = self.clone();
-                    let delete = ui::button("🗑", &["link"], move || {
-                        let ids = ids.clone();
-                        let key = key.clone();
-                        me.app.clone().mutate(|engine| engine.delete_entries(&ids, &key));
-                        me.refresh();
-                    });
-                    delete.set_tooltip_text(Some(if chrono_row.is_merged() {
-                        "Obriši unos (više blokova)"
-                    } else {
-                        "Obriši unos"
-                    }));
-                    row.append(&delete);
-
-                    row.add_css_class("row-card-dim");
-                    ui::pad(&row, 8);
-                    self.content.append(&row);
+                    _ => {
+                        let add = self.add_button();
+                        add.set_margin_top(4);
+                        self.content.append(&add);
+                    }
                 }
             }
         }
     }
 
-    /// Ispravak unosa iz kronološkog reda. Što se dogodi s blokovima odlučuje engine:
-    /// promjena samo opisa/vrste ih zadržava, promjena vremena ih stopi u jedan unos.
-    fn edit_entry(self: &Rc<Self>, row: &ChronoRow) {
-        let key = self.day_key();
+    /// Cijeli red je gumb — klik otvara uređivač na mjestu reda.
+    fn chrono_row(self: &Rc<Self>, chrono_row: &ChronoRow) -> Button {
+        let row = ui::hbox(10);
+        row.append(&ui::label(
+            &format!("{}–{}", Fmt::hhmm(chrono_row.start), Fmt::hhmm(chrono_row.end)),
+            &["mono", "muted"],
+        ));
+        let text = ui::label(&chrono_row.text, &[]);
+        text.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        if chrono_row.kind == EntryKind::Pause {
+            text.add_css_class("pause-text");
+        }
+        row.append(&text);
+        row.append(&ui::spacer());
+        if chrono_row.is_merged() {
+            row.append(&ui::label(&format!("{}×", chrono_row.ids.len()), &["mono", "accent"]));
+        }
+        row.append(&ui::label(&Fmt::dur(chrono_row.duration()), &["mono", "muted-dim"]));
+        row.append(&ui::label("✎", &["edit-hint"]));
+
+        let button = Button::new();
+        button.set_child(Some(&row));
+        button.add_css_class("row");
+        button.set_tooltip_text(Some(&if chrono_row.is_merged() {
+            format!("Uredi unos ({} bloka)", chrono_row.ids.len())
+        } else {
+            "Uredi unos".to_string()
+        }));
         let me = self.clone();
-        let edited = row.clone();
-        EntryEditWindow::new(
-            &self.app.gtk,
-            &self.window,
-            row.clone(),
-            self.app.engine.borrow().history.clone(),
-            move |text, start, end, kind| {
-                let row = edited.clone();
+        let edited = chrono_row.clone();
+        button.connect_clicked(move |_| {
+            me.open_editor(EditTarget::Existing(edited.clone()), (edited.start, edited.end));
+        });
+        button
+    }
+
+    /// Nezabilježeno vrijeme između dva unosa — klik ga popuni novim unosom.
+    fn gap_row(self: &Rc<Self>, start: DateTime<Local>, end: DateTime<Local>) -> Button {
+        let row = ui::hbox(10);
+        row.append(&ui::label("+", &["gap-text"]));
+        row.append(&ui::label(
+            &format!("{}–{}", Fmt::hhmm(start), Fmt::hhmm(end)),
+            &["mono", "gap-text"],
+        ));
+        let seconds = (end - start).num_milliseconds() as f64 / 1000.0;
+        row.append(&ui::label(&format!("nezabilježeno · {}", Fmt::dur(seconds)), &["gap-text"]));
+        row.append(&ui::spacer());
+        row.append(&ui::label("Dodaj unos", &["gap-text", "gap-hint"]));
+
+        let button = Button::new();
+        button.set_child(Some(&row));
+        button.add_css_class("gap");
+        button.set_tooltip_text(Some(&format!(
+            "Dodaj unos za {}–{}",
+            Fmt::hhmm(start),
+            Fmt::hhmm(end)
+        )));
+        let me = self.clone();
+        button.connect_clicked(move |_| {
+            me.open_editor(EditTarget::New { gap_start: Some(start) }, (start, end));
+        });
+        button
+    }
+
+    /// Novi unos na kraju dana (od kraja zadnjeg unosa) — i iz praznog dana.
+    fn add_button(self: &Rc<Self>) -> Button {
+        let button = Button::with_label("+  Dodaj unos");
+        button.add_css_class("add");
+        let me = self.clone();
+        button.connect_clicked(move |_| {
+            let range = Summarize::suggested_range(
+                &me.entries(),
+                *me.date.borrow(),
+                &me.app.engine.borrow().settings,
+            );
+            // Iz praznog grupiranog prikaza se prelazi u kronološki (toggle zatvara uređivač
+            // i osvježava, pa se uređivač otvara tek nakon toga).
+            me.chrono_toggle.set_active(true);
+            me.open_editor(EditTarget::New { gap_start: None }, range);
+        });
+        button
+    }
+
+    // MARK: - Uređivač
+
+    /// Uređivač na mjestu reda, rupe ili gumba "Dodaj unos". Što se dogodi s blokovima
+    /// spojenog reda odlučuje engine: promjena samo opisa/vrste ih zadržava, promjena
+    /// vremena ih stopi u jedan unos; preklopljeni dio drugih unosa se reže.
+    fn open_editor(self: &Rc<Self>, target: EditTarget, range: (DateTime<Local>, DateTime<Local>)) {
+        self.close_editor(false);
+        let key = self.day_key();
+        let entries = self.entries();
+        let history = self.app.engine.borrow().history.clone();
+
+        let save = {
+            let me = self.clone();
+            let key = key.clone();
+            let target = target.clone();
+            move |text: String, start, end, kind| {
+                me.close_editor(false);
                 let key = key.clone();
-                me.app.clone().mutate(move |engine| {
-                    engine.update_entries(&row, &key, &text, start, end, kind)
-                });
+                match target.row().cloned() {
+                    Some(row) => me.app.clone().mutate(move |engine| {
+                        engine.update_entries(&row, &key, &text, start, end, kind)
+                    }),
+                    None => me
+                        .app
+                        .clone()
+                        .mutate(move |engine| engine.add_entry(&key, &text, start, end, kind)),
+                }
                 me.refresh();
-            },
+            }
+        };
+        let delete = {
+            let me = self.clone();
+            let ids = target.row().map(|r| r.ids.clone()).unwrap_or_default();
+            move || {
+                me.close_editor(false);
+                let ids = ids.clone();
+                let key = key.clone();
+                me.app.clone().mutate(move |engine| engine.delete_entries(&ids, &key));
+                me.refresh();
+            }
+        };
+        let cancel = {
+            let me = self.clone();
+            move || me.close_editor(true)
+        };
+
+        let editor = EntryEditor::new(
+            target,
+            range,
+            *self.date.borrow(),
+            entries.clone(),
+            history,
+            save,
+            delete,
+            cancel,
         );
+        *self.editor.borrow_mut() = Some(editor.clone());
+        let state = Rendered {
+            day_key: self.day_key(),
+            mode: *self.mode.borrow(),
+            merging: self.app.engine.borrow().settings.merge_adjacent_entries,
+            entries,
+        };
+        self.render(&state);
+        *self.rendered.borrow_mut() = None;
+        editor.focus_text();
+    }
+
+    /// Zatvara uređivač; sadržaj se slaže iznova kod idućeg `refresh` (odmah uz `refresh_now`).
+    fn close_editor(self: &Rc<Self>, refresh_now: bool) {
+        let had_editor = self.editor.borrow_mut().take().is_some();
+        if had_editor {
+            *self.rendered.borrow_mut() = None;
+        }
+        if refresh_now {
+            self.refresh();
+        }
     }
 
     fn copy(&self) {
@@ -371,6 +535,14 @@ impl SummaryWindow {
     pub fn window(&self) -> &Window {
         &self.window
     }
+}
+
+/// Strelica za promjenu dana — veliko polje za klik (cijeli gumb, ne samo znak).
+fn day_button(glyph: &str, tooltip: &str) -> Button {
+    let button = Button::with_label(glyph);
+    button.add_css_class("nav");
+    button.set_tooltip_text(Some(tooltip));
+    button
 }
 
 fn badge_box(caption: &str, value: &gtk4::Label) -> GtkBox {

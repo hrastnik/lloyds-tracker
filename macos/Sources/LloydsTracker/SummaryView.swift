@@ -7,8 +7,8 @@ struct SummaryView: View {
     @State private var date = Date()
     @State private var mode: Mode = .grouped
     @State private var copied = false
-    /// Red kronološkog pregleda koji se ispravlja (nil = sheet zatvoren).
-    @State private var editing: ChronoRow?
+    /// Unos koji se uređuje ili dodaje u kronološkom pregledu (nil = uređivač zatvoren).
+    @State private var draft: EntryDraft?
 
     enum Mode: String, CaseIterable, Identifiable {
         case grouped = "Grupirano"
@@ -26,10 +26,13 @@ struct SummaryView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if entries.isEmpty {
+            if entries.isEmpty && draft == nil {
                 Spacer()
                 Text("Nema unosa za ovaj dan.")
                     .foregroundStyle(.secondary)
+                addButton
+                    .frame(width: 200)
+                    .padding(.top, 10)
                 Spacer()
             } else {
                 content
@@ -41,38 +44,24 @@ struct SummaryView: View {
         .background(Color.lloydsBlack)
         .preferredColorScheme(.dark)
         .tint(Color.lloydsYellow)
-        .sheet(item: $editing) { row in
-            EntryEditView(row: row, history: engine.history) { text, start, end, kind in
-                engine.updateEntries(
-                    row: row, dayKey: dayKey, text: text, start: start, end: end, kind: kind
-                )
-                editing = nil
-            } onCancel: {
-                editing = nil
-            }
-        }
+        // Uređivač pripada danu i prikazu u kojem je otvoren.
+        .onChange(of: dayKey) { draft = nil }
+        .onChange(of: mode) { if mode == .grouped { draft = nil } }
+        .onChange(of: engine.settings.mergeAdjacentEntries) { draft = nil }
     }
 
     private var header: some View {
         VStack(spacing: 10) {
             HStack {
-                Button {
-                    date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
-                } label: { Image(systemName: "chevron.left") }
-
+                dayButton("chevron.left", by: -1, help: "Prethodni dan")
                 Spacer()
                 Text(Fmt.dayTitle.string(from: date))
                     .font(.system(size: 15, weight: .heavy))
                     .foregroundStyle(.white)
                 Spacer()
-
-                Button {
-                    date = Calendar.current.date(byAdding: .day, value: 1, to: date) ?? date
-                } label: { Image(systemName: "chevron.right") }
-                .disabled(Calendar.current.isDateInToday(date))
+                dayButton("chevron.right", by: 1, help: "Sljedeći dan")
+                    .disabled(Calendar.current.isDateInToday(date))
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.lloydsYellow)
 
             HStack(spacing: 16) {
                 badge("RAD", Fmt.dur(Summarize.workTotal(entries)), .lloydsYellow)
@@ -95,6 +84,20 @@ struct SummaryView: View {
         .padding(16)
     }
 
+    /// Strelica za promjenu dana — cijela pločica (ne samo glif) prima klik.
+    private func dayButton(_ systemName: String, by days: Int, help: String) -> some View {
+        HoverButton(cornerRadius: 8, hoverFill: Color.lloydsYellow.opacity(0.12)) {
+            date = Calendar.current.date(byAdding: .day, value: days, to: date) ?? date
+        } label: { _ in
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.lloydsYellow)
+                .frame(width: 40, height: 32)
+        }
+        .help(help)
+        .modifier(DimWhenDisabled())
+    }
+
     /// Spajanje susjednih unosa je postavka (pamti se), ali se toggle-a ovdje jer vrijedi
     /// samo za kronološki prikaz.
     private var mergeToggle: some View {
@@ -115,6 +118,7 @@ struct SummaryView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(Color.white.opacity(on ? 0.06 : 0.03))
             )
+            .clickArea(cornerRadius: 6)
         }
         .buttonStyle(.plain)
         .help("14:45–15:00 + 15:00–15:15 istog naziva prikazuje se kao 14:45–15:15")
@@ -144,8 +148,28 @@ struct SummaryView: View {
                         groupRow(group)
                     }
                 case .chronological:
-                    ForEach(Summarize.chronology(entries, merging: engine.settings.mergeAdjacentEntries)) { row in
-                        chronoRow(row)
+                    let rows = Summarize.chronology(entries, merging: engine.settings.mergeAdjacentEntries)
+                    ForEach(Summarize.timeline(rows)) { item in
+                        switch item {
+                        case .row(let row):
+                            if draft?.row?.id == row.id {
+                                editor
+                            } else {
+                                chronoRow(row)
+                            }
+                        case .gap(let start, let end):
+                            if draft?.target == .new(gapStart: start) {
+                                editor
+                            } else {
+                                gapRow(start, end)
+                            }
+                        }
+                    }
+                    if draft?.target == .new(gapStart: nil) {
+                        editor
+                    } else {
+                        addButton
+                            .padding(.top, 4)
                     }
                 }
             }
@@ -176,46 +200,119 @@ struct SummaryView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
     }
 
+    /// Cijeli red je gumb — klik otvara uređivač na mjestu reda.
     private func chronoRow(_ row: ChronoRow) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(Fmt.hhmm(row.start))–\(Fmt.hhmm(row.end))")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color.lloydsGray)
-            Text(row.text)
-                .font(.system(size: 12))
-                .italic(row.kind == .pause)
-                .foregroundStyle(row.kind == .pause ? Color.lloydsGray.opacity(0.6) : .white)
-            Spacer()
-            if row.isMerged {
-                Text("\(row.ids.count)×")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color.lloydsYellow.opacity(0.6))
-            }
-            Text(Fmt.dur(row.duration))
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color.lloydsGray.opacity(0.7))
-            Button {
-                editing = row
-            } label: {
+        HoverButton(baseFill: Color.white.opacity(0.03), hoverFill: Color.white.opacity(0.08)) {
+            draft = .edit(row)
+        } label: { hovering in
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("\(Fmt.hhmm(row.start))–\(Fmt.hhmm(row.end))")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.lloydsGray)
+                Text(row.text)
+                    .font(.system(size: 12))
+                    .italic(row.kind == .pause)
+                    .foregroundStyle(row.kind == .pause ? Color.lloydsGray.opacity(0.6) : .white)
+                    .lineLimit(1)
+                Spacer()
+                if row.isMerged {
+                    Text("\(row.ids.count)×")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.lloydsYellow.opacity(0.6))
+                }
+                Text(Fmt.dur(row.duration))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.lloydsGray.opacity(0.7))
                 Image(systemName: "pencil")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.lloydsGray.opacity(0.5))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(hovering ? Color.lloydsYellow : Color.lloydsGray.opacity(0.35))
+                    .frame(width: 14)
             }
-            .buttonStyle(.plain)
-            .help(row.isMerged ? "Ispravi unos (\(row.ids.count) bloka)" : "Ispravi unos")
-            Button {
-                engine.deleteEntries(ids: row.ids, dayKey: dayKey)
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color.lloydsGray.opacity(0.5))
-            }
-            .buttonStyle(.plain)
-            .help(row.isMerged ? "Obriši unos (\(row.ids.count) bloka)" : "Obriši unos")
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 10)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.03)))
+        .help(row.isMerged ? "Uredi unos (\(row.ids.count) bloka)" : "Uredi unos")
+    }
+
+    /// Nezabilježeno vrijeme između dva unosa — klik ga popuni novim unosom.
+    private func gapRow(_ start: Date, _ end: Date) -> some View {
+        HoverButton(hoverFill: Color.lloydsYellow.opacity(0.08)) {
+            draft = .new(start: start, end: end, gapStart: start)
+        } label: { hovering in
+            HStack(spacing: 10) {
+                Image(systemName: "plus")
+                    .font(.system(size: 9, weight: .heavy))
+                Text("\(Fmt.hhmm(start))–\(Fmt.hhmm(end))")
+                    .font(.system(size: 10, design: .monospaced))
+                Text("nezabilježeno · \(Fmt.dur(end.timeIntervalSince(start)))")
+                    .font(.system(size: 10))
+                Spacer()
+                if hovering {
+                    Text("Dodaj unos")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .foregroundStyle(hovering ? Color.lloydsYellow : Color.lloydsGray.opacity(0.55))
+            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .foregroundStyle(Color.white.opacity(hovering ? 0.25 : 0.12))
+            )
+        }
+        .help("Dodaj unos za \(Fmt.hhmm(start))–\(Fmt.hhmm(end))")
+    }
+
+    /// Novi unos na kraju dana (od kraja zadnjeg unosa) — i iz praznog dana.
+    private var addButton: some View {
+        HoverButton(hoverFill: Color.lloydsYellow.opacity(0.12)) {
+            let r = Summarize.suggestedRange(entries, day: date, settings: engine.settings)
+            mode = .chronological
+            draft = .new(start: r.start, end: r.end, gapStart: nil)
+        } label: { _ in
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .heavy))
+                Text("Dodaj unos")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(Color.lloydsYellow)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.lloydsYellow.opacity(0.4), lineWidth: 1)
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        if let current = draft {
+            EntryEditor(
+                draft: Binding(get: { draft ?? current }, set: { draft = $0 }),
+                day: date,
+                entries: entries,
+                history: engine.history,
+                onSave: { text, start, end, kind in
+                    if let row = current.row {
+                        engine.updateEntries(row: row, dayKey: dayKey, text: text, start: start, end: end, kind: kind)
+                    } else {
+                        engine.addEntry(dayKey: dayKey, text: text, start: start, end: end, kind: kind)
+                    }
+                    draft = nil
+                },
+                onDelete: current.row.map { row in
+                    {
+                        engine.deleteEntries(ids: row.ids, dayKey: dayKey)
+                        draft = nil
+                    }
+                },
+                onCancel: { draft = nil }
+            )
+            .id(current.target)
+        }
     }
 
     private var footer: some View {
@@ -238,8 +335,13 @@ struct SummaryView: View {
 
             Spacer()
 
-            Button("Otvori folder s podacima") {
+            Button {
                 NSWorkspace.shared.open(Store.directory)
+            } label: {
+                Text("Otvori folder s podacima")
+                    .padding(.vertical, 5)
+                    .padding(.horizontal, 6)
+                    .clickArea()
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
@@ -258,4 +360,10 @@ struct SummaryView: View {
             try? Summarize.csv(entries: entries).write(to: url, atomically: true, encoding: .utf8)
         }
     }
+}
+
+/// Onemogućena strelica (npr. "sljedeći dan" na današnjem danu) je vidno prigušena.
+private struct DimWhenDisabled: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    func body(content: Content) -> some View { content.opacity(isEnabled ? 1 : 0.3) }
 }

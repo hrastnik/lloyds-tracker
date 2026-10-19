@@ -52,6 +52,32 @@ internal static class Fmt
         return $"{m}m";
     }
 
+    /// <summary>A hand-typed time: "9", "930", "0930", "9:30", "9.30" or "9,30".</summary>
+    public static (int Hour, int Minute)? ParseTime(string input)
+    {
+        string s = input.Trim().Replace('.', ':').Replace(',', ':');
+        int h, m;
+        if (s.Contains(':'))
+        {
+            var parts = s.Split(':');
+            if (parts.Length != 2 || parts[0].Length is < 1 or > 2 || parts[1].Length != 2) return null;
+            if (!parts[0].All(char.IsAsciiDigit) || !parts[1].All(char.IsAsciiDigit)) return null;
+            h = int.Parse(parts[0], Invariant);
+            m = int.Parse(parts[1], Invariant);
+        }
+        else
+        {
+            if (s.Length is < 1 or > 4 || !s.All(char.IsAsciiDigit)) return null;
+            if (s.Length <= 2) { h = int.Parse(s, Invariant); m = 0; }
+            else { h = int.Parse(s[..^2], Invariant); m = int.Parse(s[^2..], Invariant); }
+        }
+        if (h is < 0 or > 23 || m is < 0 or > 59) return null;
+        return (h, m);
+    }
+
+    /// <summary>The same day as <paramref name="day"/>, at the given hour and minute.</summary>
+    public static DateTime At(DateTime day, int hour, int minute) => day.Date.AddHours(hour).AddMinutes(minute);
+
     public static string Countdown(double seconds)
     {
         int total = Math.Max(0, (int)Math.Round(seconds));

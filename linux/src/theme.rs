@@ -58,6 +58,38 @@ impl Fmt {
         }
     }
 
+    /// Vrijeme upisano rukom: "9", "930", "0930", "9:30", "9.30" ili "9,30".
+    pub fn parse_time(input: &str) -> Option<(u32, u32)> {
+        let s = input.trim().replace(['.', ','], ":");
+        let digits = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit());
+        let (h, m) = if let Some((h, m)) = s.split_once(':') {
+            if !(1..=2).contains(&h.len()) || m.len() != 2 || !digits(h) || !digits(m) {
+                return None;
+            }
+            (h.parse().ok()?, m.parse().ok()?)
+        } else {
+            if !(1..=4).contains(&s.len()) || !digits(&s) {
+                return None;
+            }
+            if s.len() <= 2 {
+                (s.parse().ok()?, 0)
+            } else {
+                let (h, m) = s.split_at(s.len() - 2);
+                (h.parse().ok()?, m.parse().ok()?)
+            }
+        };
+        (h <= 23 && m <= 59).then_some((h, m))
+    }
+
+    /// Isti dan kao `day`, u zadani sat i minutu (sekunde na nulu, kao macOS DatePicker).
+    pub fn at(day: DateTime<Local>, hour: u32, minute: u32) -> DateTime<Local> {
+        day.with_hour(hour)
+            .and_then(|d| d.with_minute(minute))
+            .and_then(|d| d.with_second(0))
+            .and_then(|d| d.with_nanosecond(0))
+            .unwrap_or(day)
+    }
+
     /// "04:32" — odbrojavanje do prompta / auto-stopa.
     pub fn countdown(seconds: f64) -> String {
         let total = seconds.round().max(0.0) as i64;
@@ -161,6 +193,50 @@ button.split {{
     font-size: 9px; font-weight: bold;
 }}
 button.split.on {{ color: {yellow}; border-color: {yellow}; }}
+/* Strelice ‹ › za promjenu dana u pregledu — veliko polje za klik, ne samo znak. */
+button.nav {{
+    background: transparent; background-image: none; border: none; box-shadow: none;
+    color: {yellow}; font-size: 18px; font-weight: bold;
+    border-radius: 8px; padding: 0; min-width: 40px; min-height: 32px;
+}}
+button.nav:hover {{ background: alpha({yellow}, 0.12); }}
+button.nav:disabled {{ color: alpha({yellow}, 0.3); background: transparent; }}
+
+/* Kronološki pregled: cijeli red je gumb koji otvara uređivač. */
+button.row {{
+    background: alpha(#ffffff, 0.03); background-image: none;
+    border: none; box-shadow: none; border-radius: 8px; padding: 7px 10px;
+}}
+button.row:hover {{ background: alpha(#ffffff, 0.08); }}
+.edit-hint {{ color: alpha({gray}, 0.35); font-size: 12px; }}
+button.row:hover .edit-hint {{ color: {yellow}; }}
+/* Nezabilježeno vrijeme između unosa. */
+button.gap {{
+    background: transparent; background-image: none; box-shadow: none;
+    border: 1px dashed alpha(#ffffff, 0.12); border-radius: 6px; padding: 4px 10px;
+}}
+button.gap:hover {{ background: alpha({yellow}, 0.08); border-color: alpha(#ffffff, 0.25); }}
+.gap-text {{ color: alpha({gray}, 0.55); font-size: 10px; }}
+button.gap:hover .gap-text {{ color: {yellow}; }}
+.gap-hint {{ font-weight: 600; opacity: 0; }}
+button.gap:hover .gap-hint {{ opacity: 1; }}
+button.add {{
+    background: transparent; background-image: none; box-shadow: none;
+    color: {yellow}; font-weight: 600;
+    border: 1px solid alpha({yellow}, 0.4); border-radius: 6px; padding: 7px 14px;
+}}
+button.add:hover {{ background: alpha({yellow}, 0.12); }}
+button.danger {{
+    background: alpha(#ff5c4f, 0.1); background-image: none; box-shadow: none;
+    color: #ff5c4f; font-weight: 600;
+    border: none; border-radius: 8px; padding: 8px 12px;
+}}
+button.danger:hover {{ background: alpha(#ff5c4f, 0.18); }}
+.editor-card {{
+    background: alpha(#ffffff, 0.06);
+    border: 1px solid alpha({yellow}, 0.5); border-radius: 8px;
+    padding: 12px;
+}}
 
 entry.brand {{
     background: alpha(#ffffff, 0.07); background-image: none;
@@ -178,6 +254,13 @@ entry.brand.next-up {{
 }}
 entry.brand.next-up.big {{ font-size: 15px; padding: 12px; }}
 entry.brand:focus {{ border-color: alpha({yellow}, 0.8); }}
+/* Uređivač unosa u pregledu — manja polja od prompta. */
+entry.brand.compact {{ font-size: 13px; padding: 6px 9px; border-radius: 7px; }}
+entry.brand.time {{
+    font-family: monospace; font-size: 13px; font-weight: 600;
+    padding: 6px; border-radius: 7px;
+}}
+entry.brand.invalid {{ border-color: #ffa500; }}
 
 .kbd {{
     background: alpha(#ffffff, 0.12); border-radius: 4px;
@@ -203,4 +286,29 @@ checkbutton check:checked {{ background: {yellow}; color: {black}; }}
         yellow = YELLOW,
         gray = GRAY,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fmt;
+
+    #[test]
+    fn parse_time_accepts_common_forms() {
+        for (input, expected) in [
+            ("9", Some((9, 0))),
+            ("930", Some((9, 30))),
+            ("0930", Some((9, 30))),
+            ("9:30", Some((9, 30))),
+            (" 9.30 ", Some((9, 30))),
+            ("9,30", Some((9, 30))),
+            ("23:59", Some((23, 59))),
+            ("24:00", None),
+            ("9:3", None),
+            ("960", None),
+            ("abc", None),
+            ("", None),
+        ] {
+            assert_eq!(Fmt::parse_time(input), expected, "{input:?}");
+        }
+    }
 }

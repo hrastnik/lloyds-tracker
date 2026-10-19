@@ -7,7 +7,8 @@ prompt se može **preskočiti**, pa taj period čeka u sljedećem promptu; a *Za
 otvara prompt ručno, kad god treba. Odgovori se spremaju
 lokalno kao JSON, a na kraju dana dobiješ grupirani pregled koji možeš kopirati ili
 exportati u CSV (kronološki pregled može spojiti susjedne unose istog naziva u jedan, a
-svaki se unos može i ispraviti). Ako
+unosi se ispravljaju, brišu i dodaju izravno u njemu — klikom na red ili na nezabilježenu
+rupu između unosa). Ako
 zaboraviš isključiti, tracking se **sam zaustavlja** u zadano vrijeme (default 16:00) —
 minutu prije iskoči upozorenje s opcijom produženja samo za taj dan. Prompt koji je
 prenoćio (laptop zatvoren bez odgovora) ne razvuče period u novi dan — odreže se na to

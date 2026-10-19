@@ -262,9 +262,10 @@ struct MenuBarView: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(Color.lloydsGray.opacity(0.7))
                                 .underline()
+                                .padding(.vertical, 4)
+                                .clickArea()
                         }
                         .buttonStyle(.plain)
-                        .padding(.top, 2)
                     }
                 }
             }
@@ -293,24 +294,32 @@ struct MenuBarView: View {
 
     private var footer: some View {
         HStack {
-            Button("Pregled dana") {
+            footerLink("Pregled dana") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "summary")
             }
             Spacer()
-            Button("Postavke…") {
+            footerLink("Postavke…") {
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
             Spacer()
-            Button("Izlaz") {
+            footerLink("Izlaz") {
                 NSApp.terminate(nil)
             }
         }
-        .buttonStyle(.plain)
-        .font(.system(size: 11))
-        .foregroundStyle(Color.lloydsGray)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    /// Tekstualni link u podnožju s površinom za klik većom od samog teksta.
+    private func footerLink(_ title: String, action: @escaping () -> Void) -> some View {
+        HoverButton(action: action) { hovering in
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(hovering ? Color.white : Color.lloydsGray)
+                .padding(.vertical, 5)
+                .padding(.horizontal, 6)
+        }
     }
 }

@@ -205,8 +205,71 @@ public sealed class ChronoRow
     public bool IsMerged => Ids.Count > 1;
 }
 
+/// <summary>An item of the chronological view: a row with an entry, or a gap between two
+/// entries (unrecorded time) — clicking a gap fills it with a new entry.</summary>
+public sealed class TimelineItem
+{
+    public ChronoRow? Row { get; init; }
+    public DateTime GapStart { get; init; }
+    public DateTime GapEnd { get; init; }
+}
+
 internal static class Summarize
 {
+    /// <summary>Chronological rows with the gaps between them. A gap is at least a minute
+    /// between the end of the latest entry so far and the start of the next one.</summary>
+    public static List<TimelineItem> Timeline(IEnumerable<ChronoRow> rows)
+    {
+        var items = new List<TimelineItem>();
+        DateTime? lastEnd = null;
+        foreach (var row in rows)
+        {
+            if (lastEnd is DateTime last && (row.Start - last).TotalSeconds >= 60)
+                items.Add(new TimelineItem { GapStart = last, GapEnd = row.Start });
+            items.Add(new TimelineItem { Row = row });
+            lastEnd = lastEnd is DateTime l ? Max(l, row.End) : row.End;
+        }
+        return items;
+    }
+
+    /// <summary>Entries overlapping the range (excluding the ones being corrected).</summary>
+    public static List<Entry> Overlapping(IEnumerable<Entry> entries, DateTime start, DateTime end, ICollection<Guid>? excluding = null)
+        => entries.Where(e => (excluding == null || !excluding.Contains(e.Id)) && e.Start < end && e.End > start).ToList();
+
+    /// <summary>The new/corrected entry "wins": other entries are trimmed, split or removed so
+    /// that nothing covers <c>start…end</c> — otherwise the same time would count twice.</summary>
+    public static void Carve(List<Entry> day, DateTime start, DateTime end, ICollection<Guid>? excluding = null)
+    {
+        var result = new List<Entry>();
+        foreach (var e in day)
+        {
+            if ((excluding != null && excluding.Contains(e.Id)) || !(e.Start < end && e.End > start))
+            {
+                result.Add(e);
+                continue;
+            }
+            if (e.Start < start)
+                result.Add(new Entry(e.Start, start, e.Text, e.Kind) { Id = e.Id });
+            if (e.End > end)
+                // If the head stayed too, the tail is a new entry (they can't share an id).
+                result.Add(new Entry(end, e.End, e.Text, e.Kind) { Id = e.Start < start ? Guid.NewGuid() : e.Id });
+        }
+        day.Clear();
+        day.AddRange(result);
+    }
+
+    /// <summary>Suggested range for "Dodaj unos": from the end of the last entry (or the
+    /// workday start if there are none), one interval long, within the same day.</summary>
+    public static (DateTime Start, DateTime End) SuggestedRange(IEnumerable<Entry> entries, DateTime day, AppSettings settings)
+    {
+        var dayEnd = day.Date.AddDays(1).AddMinutes(-1);
+        var workday = Fmt.At(day, settings.WorkdayStartHour, settings.WorkdayStartMinute);
+        var list = entries.ToList();
+        var start = Min(list.Count > 0 ? list.Max(e => e.End) : workday, dayEnd.AddMinutes(-1));
+        var end = Min(start.AddMinutes(settings.IntervalMinutes), dayEnd);
+        return (start, end);
+    }
+
     /// <summary>Chronological list of entries. With <paramref name="merging"/>, adjacent
     /// entries of the same text and kind — where one ends as the next begins — form a single
     /// row (14:45–15:00 + 15:00–15:15 → 14:45–15:15). Only immediate neighbours merge, so a
@@ -323,4 +386,5 @@ internal static class Summarize
     private static string Iso(DateTime d) => d.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
 
     private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
+    private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;
 }

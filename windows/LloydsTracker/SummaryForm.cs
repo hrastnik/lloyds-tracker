@@ -4,7 +4,7 @@ using System.Windows.Forms;
 namespace LloydsTracker;
 
 /// <summary>"Pregled dana" — grouped/chronological day view with copy, CSV export,
-/// per-entry delete and day navigation. Mirrors the SwiftUI SummaryView.</summary>
+/// inline editing/adding of entries and day navigation. Mirrors the SwiftUI SummaryView.</summary>
 internal sealed class SummaryForm : Form
 {
     private enum ViewMode { Grouped, Chronological }
@@ -21,7 +21,11 @@ internal sealed class SummaryForm : Form
     private Label _dayLabel = null!;
     private Label _workBadge = null!;
     private Label _pauseBadge = null!;
+    private FlatButton _prevButton = null!;
     private FlatButton _nextButton = null!;
+    /// <summary>Uređivač unosa u kronološkom pregledu (null = zatvoren). Preživljava
+    /// <see cref="LayoutContent"/>, pa promjena u engineu ne prekida tipkanje.</summary>
+    private EntryEditor? _editor;
     private FlatButton _copyButton = null!;
     private FlatButton _groupedTab = null!;
     private FlatButton _chronoTab = null!;
@@ -75,17 +79,19 @@ internal sealed class SummaryForm : Form
 
     private void BuildHeader()
     {
-        var prev = new FlatButton { Text = "◀", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(30), Brand.S(26)), Location = new Point(Brand.S(16), Brand.S(14)) };
-        prev.Click += (_, _) => { _date = _date.AddDays(-1); Rebuild(); };
-        _header.Controls.Add(prev);
+        // Strelice dana: velika pločica s hover podlogom — cijela prima klik, ne samo glif.
+        _prevButton = DayButton("◀", "Prethodni dan");
+        _prevButton.Location = new Point(Brand.S(12), Brand.S(10));
+        _prevButton.Click += (_, _) => ShiftDay(-1);
+        _header.Controls.Add(_prevButton);
 
-        _nextButton = new FlatButton { Text = "▶", TextColor = Palette.Yellow, Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(30), Brand.S(26)) };
-        _nextButton.Click += (_, _) => { if (!IsToday()) { _date = _date.AddDays(1); Rebuild(); } };
+        _nextButton = DayButton("▶", "Sljedeći dan");
+        _nextButton.Click += (_, _) => { if (!IsToday()) ShiftDay(1); };
         _nextButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _nextButton.Location = new Point(ClientSize.Width - Brand.S(16) - Brand.S(30), Brand.S(14));
+        _nextButton.Location = new Point(ClientSize.Width - Brand.S(12) - _nextButton.Width, Brand.S(10));
         _header.Controls.Add(_nextButton);
 
-        _dayLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Brand.Ui(11.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(Brand.S(52), Brand.S(14)), Size = new Size(ClientSize.Width - Brand.S(104), Brand.S(26)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        _dayLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleCenter, Font = Brand.Ui(11.5f, FontStyle.Bold), ForeColor = Palette.White, BackColor = Palette.Black, Location = new Point(Brand.S(60), Brand.S(10)), Size = new Size(ClientSize.Width - Brand.S(120), Brand.S(34)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         _header.Controls.Add(_dayLabel);
 
         _workBadge = MakeBadge("RAD", Palette.Yellow, new Point(Brand.S(16), Brand.S(56)));
@@ -112,10 +118,29 @@ internal sealed class SummaryForm : Form
         };
         _mergeToggle.Click += (_, _) =>
         {
+            CloseEditor(relayout: false);
             _engine.MutateSettings(s => s.MergeAdjacentEntries = !s.MergeAdjacentEntries);
             Rebuild();
         };
         _header.Controls.Add(_mergeToggle);
+    }
+
+    private FlatButton DayButton(string glyph, string tip)
+    {
+        var button = new FlatButton
+        {
+            Text = glyph, TextColor = Palette.Yellow, Fill = Palette.Black, CornerRadius = 8,
+            Font = Brand.Ui(11f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(44), Brand.S(34)),
+        };
+        _tips.SetToolTip(button, tip);
+        return button;
+    }
+
+    private void ShiftDay(int days)
+    {
+        CloseEditor(relayout: false);
+        _date = _date.AddDays(days);
+        Rebuild();
     }
 
     private Label MakeBadge(string label, Color color, Point loc)
@@ -149,7 +174,12 @@ internal sealed class SummaryForm : Form
             BackColor = Palette.Black,
             Size = new Size(Brand.S(96), Brand.S(26)),
         };
-        tab.Click += (_, _) => { _mode = mode; Rebuild(); };
+        tab.Click += (_, _) =>
+        {
+            if (mode == ViewMode.Grouped) CloseEditor(relayout: false);
+            _mode = mode;
+            Rebuild();
+        };
         return tab;
     }
 
@@ -182,6 +212,8 @@ internal sealed class SummaryForm : Form
     {
         _dayLabel.Text = Fmt.DayTitle(_date);
         _nextButton.Enabled = !IsToday();
+        _nextButton.TextColor = IsToday() ? Palette.Yellow.OverBlack(0.3) : Palette.Yellow;
+        _nextButton.Invalidate();
         RenderBadge(_workBadge, Fmt.Dur(Summarize.WorkTotal(Entries)));
         RenderBadge(_pauseBadge, Fmt.Dur(Summarize.PauseTotal(Entries)));
         _pauseBadge.Location = new Point(_workBadge.Right + Brand.S(8), Brand.S(56));
@@ -216,22 +248,32 @@ internal sealed class SummaryForm : Form
     private void LayoutContent()
     {
         _content.SuspendLayout();
-        foreach (Control c in _content.Controls.Cast<Control>().ToList()) c.Dispose();
-        _content.Controls.Clear();
+        // Otvoreni uređivač se ne dira — zadržava fokus i upisani tekst.
+        foreach (Control c in _content.Controls.Cast<Control>().ToList())
+        {
+            if (c == _editor) continue;
+            c.Dispose();
+        }
 
         var entries = Entries;
         int width = _content.ClientSize.Width - Brand.S(32);
         if (width < Brand.S(40)) { _content.ResumeLayout(true); return; }
 
-        if (entries.Count == 0)
+        // Pozicije su relativne na vidljivi dio, pa se pomak skrolanja uračunava.
+        int top = Brand.S(16) + _content.AutoScrollPosition.Y;
+
+        if (entries.Count == 0 && _editor == null)
         {
-            var empty = new Label { AutoSize = true, Text = "Nema unosa za ovaj dan.", ForeColor = Palette.Gray, BackColor = Palette.Black, Font = Brand.Ui(10f), Location = new Point(Brand.S(16), Brand.S(24)) };
+            var empty = new Label { AutoSize = true, Text = "Nema unosa za ovaj dan.", ForeColor = Palette.Gray, BackColor = Palette.Black, Font = Brand.Ui(10f), Location = new Point(Brand.S(16), top + Brand.S(8)) };
             _content.Controls.Add(empty);
+            var add = AddButton(Brand.S(200));
+            add.Location = new Point(Brand.S(16), empty.Bottom + Brand.S(12));
+            _content.Controls.Add(add);
             _content.ResumeLayout(true);
             return;
         }
 
-        int y = Brand.S(16);
+        int y = top;
         if (_mode == ViewMode.Grouped)
         {
             foreach (var group in Summarize.Groups(entries))
@@ -239,10 +281,57 @@ internal sealed class SummaryForm : Form
         }
         else
         {
-            foreach (var row in Summarize.Chronology(entries, _engine.Settings.MergeAdjacentEntries))
-                y = AddChronoRow(row, y, width);
+            bool placed = false;
+            var rows = Summarize.Chronology(entries, _engine.Settings.MergeAdjacentEntries);
+            foreach (var item in Summarize.Timeline(rows))
+            {
+                if (item.Row is ChronoRow row)
+                {
+                    if (_editor?.Draft.Row is ChronoRow editing && editing.Ids[0] == row.Ids[0])
+                    {
+                        y = PlaceEditor(y, width);
+                        placed = true;
+                    }
+                    else
+                    {
+                        y = AddChronoRow(row, y, width);
+                    }
+                }
+                else if (_editor != null && _editor.Draft.Row == null && _editor.Draft.GapStart == item.GapStart)
+                {
+                    y = PlaceEditor(y, width);
+                    placed = true;
+                }
+                else
+                {
+                    y = AddGapRow(item.GapStart, item.GapEnd, y, width);
+                }
+            }
+
+            if (_editor != null && _editor.Draft.Row == null && _editor.Draft.GapStart == null)
+            {
+                y = PlaceEditor(y + Brand.S(4), width);
+                placed = true;
+            }
+            else
+            {
+                var add = AddButton(width);
+                add.Location = new Point(Brand.S(16), y + Brand.S(4));
+                _content.Controls.Add(add);
+            }
+
+            // Red koji se uređivao je nestao (npr. obrisan iz drugog prozora).
+            if (_editor != null && !placed) CloseEditor(relayout: false);
         }
         _content.ResumeLayout(true);
+    }
+
+    private int PlaceEditor(int y, int width)
+    {
+        var editor = _editor!;
+        editor.SetBounds(Brand.S(16), y, width, editor.Height);
+        if (editor.Parent != _content) _content.Controls.Add(editor);
+        return y + editor.Height + Brand.S(6);
     }
 
     private int AddGroupRow(GroupSummary group, int y, int width)
@@ -263,53 +352,87 @@ internal sealed class SummaryForm : Form
         return y + Brand.S(52) + Brand.S(8);
     }
 
+    /// <summary>Cijeli red je gumb — klik otvara uređivač na mjestu reda.</summary>
     private int AddChronoRow(ChronoRow entry, int y, int width)
     {
-        bool pause = entry.Kind == EntryKind.Pause;
-        var fill = Palette.White.OverBlack(0.03);
-        var row = new CardPanel { CardFill = fill, BorderWidth = 0, Radius = 6, Location = new Point(Brand.S(16), y), Size = new Size(width, Brand.S(30)), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
-
-        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8.5f), ForeColor = Palette.Gray, BackColor = fill, Location = new Point(Brand.S(10), Brand.S(7)) };
-        row.Controls.Add(time);
-
-        var del = new FlatButton { Text = "✕", TextColor = Palette.Gray.With(0.6), Font = Brand.Ui(8f, FontStyle.Bold), BackColor = fill, Size = new Size(Brand.S(22), Brand.S(22)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(width - Brand.S(8) - Brand.S(22), Brand.S(4)) };
-        del.Click += (_, _) => { _engine.DeleteEntries(entry.Ids, DayKey); Rebuild(); };
-        row.Controls.Add(del);
-
-        // Ispravak unosa — spojeni red se ispravlja kao jedna cjelina (vidi EntryEditForm).
-        var edit = new FlatButton { Text = "✎", TextColor = Palette.Gray.With(0.5), Font = Brand.Ui(9f), BackColor = fill, Size = new Size(Brand.S(22), Brand.S(22)), Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(del.Left - Brand.S(2) - Brand.S(22), Brand.S(4)) };
-        _tips.SetToolTip(edit, entry.IsMerged ? $"Ispravi unos ({entry.Ids.Count} bloka)" : "Ispravi unos");
-        edit.Click += (_, _) => EditEntry(entry);
-        row.Controls.Add(edit);
-
-        var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8.5f), ForeColor = Palette.Gray.With(0.7), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        dur.Location = new Point(edit.Left - Brand.S(8) - dur.PreferredWidth, Brand.S(7));
-        row.Controls.Add(dur);
-
-        int textRight = dur.Left - Brand.S(8);
-        if (entry.IsMerged)
-        {
-            var count = new Label { AutoSize = true, Text = $"{entry.Ids.Count}×", Font = Brand.Mono(8f, FontStyle.Bold), ForeColor = Palette.Yellow.With(0.6), BackColor = fill, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            count.Location = new Point(dur.Left - Brand.S(8) - count.PreferredWidth, Brand.S(7));
-            row.Controls.Add(count);
-            textRight = count.Left - Brand.S(8);
-        }
-
-        int textLeft = time.Right + Brand.S(10);
-        var text = new Label { AutoSize = false, AutoEllipsis = true, Text = entry.Text, Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular), ForeColor = pause ? Palette.Gray.With(0.6) : Palette.White, BackColor = fill, Location = new Point(textLeft, Brand.S(7)), Size = new Size(Math.Max(Brand.S(20), textRight - textLeft), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
-        row.Controls.Add(text);
-
+        var row = new ChronoRowControl(entry) { Location = new Point(Brand.S(16), y), Width = width, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        _tips.SetToolTip(row, entry.IsMerged ? $"Uredi unos ({entry.Ids.Count} bloka)" : "Uredi unos");
+        row.Click += (_, _) => OpenEditor(EntryDraft.Edit(entry));
         _content.Controls.Add(row);
-        return y + Brand.S(30) + Brand.S(6);
+        return y + row.Height + Brand.S(6);
     }
 
-    /// <summary>Ispravak jednog reda kronološkog pregleda — opis, vrijeme i vrsta.</summary>
-    private void EditEntry(ChronoRow entry)
+    /// <summary>Nezabilježeno vrijeme između dva unosa — klik ga popuni novim unosom.</summary>
+    private int AddGapRow(DateTime start, DateTime end, int y, int width)
     {
-        using var dialog = new EntryEditForm(entry, _engine.History);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        _engine.UpdateEntries(entry, DayKey, dialog.EntryText, dialog.EntryStart, dialog.EntryEnd, dialog.Kind);
+        var gap = new FlatButton
+        {
+            Text = $"+   {Fmt.Hhmm(start)}–{Fmt.Hhmm(end)}   nezabilježeno · {Fmt.Dur((end - start).TotalSeconds)}",
+            TextColor = Palette.Gray.OverBlack(0.55), BorderColor = Palette.White.OverBlack(0.14), BorderWidth = 1,
+            CornerRadius = 6, Font = Brand.Ui(8.5f), Align = ContentAlignment.MiddleLeft, BackColor = Palette.Black,
+            Location = new Point(Brand.S(16), y), Size = new Size(width, Brand.S(26)),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+        _tips.SetToolTip(gap, $"Dodaj unos za {Fmt.Hhmm(start)}–{Fmt.Hhmm(end)}");
+        gap.Click += (_, _) => OpenEditor(EntryDraft.New(start, end, start));
+        _content.Controls.Add(gap);
+        return y + gap.Height + Brand.S(6);
+    }
+
+    /// <summary>Novi unos na kraju dana (od kraja zadnjeg unosa) — i iz praznog dana.</summary>
+    private FlatButton AddButton(int width)
+    {
+        var add = new FlatButton
+        {
+            Text = "+  Dodaj unos", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.06),
+            BorderColor = Palette.Yellow.With(0.4), BorderWidth = 1, CornerRadius = 6,
+            Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(width, Brand.S(30)),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+        };
+        add.Click += (_, _) =>
+        {
+            var (start, end) = Summarize.SuggestedRange(Entries, _date, _engine.Settings);
+            _mode = ViewMode.Chronological;
+            OpenEditor(EntryDraft.New(start, end, null));
+        };
+        return add;
+    }
+
+    // MARK: - Uređivač
+
+    private void OpenEditor(EntryDraft draft)
+    {
+        CloseEditor(relayout: false);
+        string dayKey = DayKey;
+        var editor = new EntryEditor(draft, _date, () => Entries, _engine.History);
+        editor.SaveRequested += (text, start, end, kind) =>
+        {
+            if (draft.Row is ChronoRow row) _engine.UpdateEntries(row, dayKey, text, start, end, kind);
+            else _engine.AddEntry(dayKey, text, start, end, kind);
+            CloseEditor();
+        };
+        editor.DeleteRequested += () =>
+        {
+            if (draft.Row is ChronoRow row) _engine.DeleteEntries(row.Ids, dayKey);
+            CloseEditor();
+        };
+        editor.CancelRequested += () => CloseEditor();
+        _editor = editor;
         Rebuild();
+        editor.FocusText();
+    }
+
+    /// <summary>Zatvara uređivač; <paramref name="relayout"/>=false kad pozivatelj ionako
+    /// odmah radi <see cref="Rebuild"/>.</summary>
+    private void CloseEditor(bool relayout = true)
+    {
+        if (_editor == null) return;
+        var editor = _editor;
+        _editor = null;
+        _content.Controls.Remove(editor);
+        // Dispose tek nakon što event handler (Spremi/Odustani) završi.
+        BeginInvoke(new Action(editor.Dispose));
+        if (relayout) Rebuild();
     }
 
     // MARK: - Footer actions
@@ -347,6 +470,72 @@ internal sealed class SummaryForm : Form
     {
         try { System.Diagnostics.Process.Start("explorer.exe", Store.Directory); }
         catch { /* best effort */ }
+    }
+
+    /// <summary>Red kronološkog pregleda kao jedan gumb — klik bilo gdje otvara uređivač,
+    /// a olovka desno je samo vizualni znak da se red uređuje.</summary>
+    private sealed class ChronoRowControl : Control
+    {
+        private readonly ChronoRow _row;
+        private bool _hover;
+
+        public ChronoRowControl(ChronoRow row)
+        {
+            _row = row;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+                     | ControlStyles.ResizeRedraw, true);
+            BackColor = Palette.Black;
+            Cursor = Cursors.Hand;
+            Height = Brand.S(32);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(BackColor);
+            using (var path = Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(6)))
+            using (var b = new SolidBrush(Palette.White.OverBlack(_hover ? 0.08 : 0.03)))
+                g.FillPath(b, path);
+
+            const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+            bool pause = _row.Kind == EntryKind.Pause;
+            using var mono = Brand.Mono(8.5f);
+            using var monoBold = Brand.Mono(8f, FontStyle.Bold);
+            using var ui = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular);
+            using var glyph = Brand.Ui(9.5f);
+
+            int x = Brand.S(10);
+            string time = $"{Fmt.Hhmm(_row.Start)}–{Fmt.Hhmm(_row.End)}";
+            var timeSize = TextRenderer.MeasureText(g, time, mono, Size.Empty, flags);
+            TextRenderer.DrawText(g, time, mono, new Rectangle(x, 0, timeSize.Width, Height), Palette.Gray, flags);
+            x += timeSize.Width + Brand.S(10);
+
+            int right = Width - Brand.S(10);
+            var pencilColor = _hover ? Palette.Yellow : Palette.Gray.OverBlack(0.35);
+            var pencilSize = TextRenderer.MeasureText(g, "✎", glyph, Size.Empty, flags);
+            TextRenderer.DrawText(g, "✎", glyph, new Rectangle(right - pencilSize.Width, 0, pencilSize.Width, Height), pencilColor, flags);
+            right -= pencilSize.Width + Brand.S(10);
+
+            string dur = Fmt.Dur(_row.Duration);
+            var durSize = TextRenderer.MeasureText(g, dur, mono, Size.Empty, flags);
+            TextRenderer.DrawText(g, dur, mono, new Rectangle(right - durSize.Width, 0, durSize.Width, Height), Palette.Gray.OverBlack(0.7), flags);
+            right -= durSize.Width + Brand.S(8);
+
+            if (_row.IsMerged)
+            {
+                string count = $"{_row.Ids.Count}×";
+                var countSize = TextRenderer.MeasureText(g, count, monoBold, Size.Empty, flags);
+                TextRenderer.DrawText(g, count, monoBold, new Rectangle(right - countSize.Width, 0, countSize.Width, Height), Palette.Yellow.OverBlack(0.6), flags);
+                right -= countSize.Width + Brand.S(8);
+            }
+
+            TextRenderer.DrawText(g, _row.Text, ui, new Rectangle(x, 0, Math.Max(0, right - x), Height),
+                pause ? Palette.Gray.OverBlack(0.6) : Palette.White, flags | TextFormatFlags.EndEllipsis);
+        }
     }
 
     protected override void OnResize(EventArgs e)

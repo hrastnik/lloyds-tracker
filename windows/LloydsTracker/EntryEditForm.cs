@@ -1,307 +1,298 @@
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace LloydsTracker;
 
-/// <summary>Ispravak postojećeg unosa iz kronološkog pregleda — opis, vrijeme i vrsta
-/// (rad/pauza). Spojeni red (`2×`) se ispravlja kao jedna cjelina: promjena samo
-/// opisa/vrste zadržava blokove, a promjena vremena ih stopi u jedan unos (novi raspon
-/// nema stare granice). Zrcali macOS EntryEditView.</summary>
-internal sealed class EntryEditForm : Form
+/// <summary>Što se uređuje u kronološkom pregledu — postojeći red ili novi unos. Vremena se
+/// drže kao upisani tekst ("9:30"), a tumače tek kod provjere i spremanja. Zrcali macOS
+/// EntryDraft.</summary>
+internal sealed class EntryDraft
 {
-    private readonly ChronoRow _row;
-    private readonly IReadOnlyList<string> _history;
+    /// <summary>Postojeći red; null = novi unos.</summary>
+    public ChronoRow? Row { get; init; }
+    /// <summary>Novi unos: rupa iz koje je pokrenut (null = gumb "Dodaj unos").</summary>
+    public DateTime? GapStart { get; init; }
+    public string Text { get; set; } = "";
+    public string Start { get; set; } = "";
+    public string End { get; set; } = "";
+    public EntryKind Kind { get; set; } = EntryKind.Work;
 
+    public static EntryDraft Edit(ChronoRow row) => new()
+    {
+        Row = row, Text = row.Text, Start = Fmt.Hhmm(row.Start), End = Fmt.Hhmm(row.End), Kind = row.Kind,
+    };
+
+    public static EntryDraft New(DateTime start, DateTime end, DateTime? gapStart) => new()
+    {
+        GapStart = gapStart, Start = Fmt.Hhmm(start), End = Fmt.Hhmm(end),
+    };
+}
+
+/// <summary>Uređivač unosa unutar kronološkog pregleda — otvara se na mjestu reda (ispravak),
+/// rupe ili gumba "Dodaj unos" (novi unos). Spojeni red (`2×`) se ispravlja kao jedna cjelina:
+/// promjena samo opisa/vrste zadržava blokove, a promjena vremena ih stopi u jedan unos (novi
+/// raspon nema stare granice). Preklopljeni dio drugih unosa se reže. Zrcali macOS
+/// EntryEditor.</summary>
+internal sealed class EntryEditor : Control
+{
+    private readonly EntryDraft _draft;
+    private readonly DateTime _day;
+    private readonly Func<IReadOnlyList<Entry>> _entries;
+
+    public event Action<string, DateTime, DateTime, EntryKind>? SaveRequested;
+    public event Action? DeleteRequested;
+    public event Action? CancelRequested;
+
+    private readonly PromptTextField _start;
+    private readonly PromptTextField _end;
     private readonly PromptTextField _text;
-    private readonly ComboBox _startHour;
-    private readonly ComboBox _startMinute;
-    private readonly ComboBox _endHour;
-    private readonly ComboBox _endMinute;
+    private readonly TrackedLabel _fromLabel;
+    private readonly TrackedLabel _toLabel;
     private readonly Label _duration;
-    private readonly Label _warning;
     private readonly FlatButton _work;
     private readonly FlatButton _pause;
+    private readonly ComboBox? _history;
+    private readonly Label _notice;
+    private readonly FlatButton? _delete;
+    private readonly FlatButton _cancel;
     private readonly FlatButton _save;
 
-    private EntryKind _kind;
-    private int _y;
+    private static readonly Color CardFill = Palette.White.OverBlack(0.06);
+    private static readonly Color DeleteRed = Color.FromArgb(255, 92, 79);
+    private const int Pad = 12;
 
-    /// <summary>Rezultat — čita se nakon <c>DialogResult.OK</c>.</summary>
-    public string EntryText => _text.Value.Trim();
-    public DateTime EntryStart => Combine(_row.Start, _startHour, _startMinute);
-    public DateTime EntryEnd => Combine(_row.End, _endHour, _endMinute);
-    public EntryKind Kind => _kind;
+    public EntryDraft Draft => _draft;
 
-    private const int Pad = 22;
-    private const int FormWidth = 420;
-
-    public EntryEditForm(ChronoRow row, IReadOnlyList<string> history)
+    public EntryEditor(EntryDraft draft, DateTime day, Func<IReadOnlyList<Entry>> entries, IReadOnlyList<string> history)
     {
-        _row = row;
-        _history = history;
-        _kind = row.Kind;
-
-        Text = "Ispravi unos";
-        Icon = TrayIconFactory.Window;
-        ClientSize = new Size(Brand.S(FormWidth), Brand.S(320));
-        StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
-        MaximizeBox = false;
-        MinimizeBox = false;
+        _draft = draft;
+        _day = day;
+        _entries = entries;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
+                 | ControlStyles.ResizeRedraw, true);
         BackColor = Palette.Black;
-        Font = Brand.Ui(9.5f);
-        KeyPreview = true;
 
-        int inner = Brand.S(FormWidth) - Brand.S(Pad) * 2;
-        _y = Brand.S(Pad);
+        _fromLabel = SectionLabel("OD");
+        _toLabel = SectionLabel("DO");
+        _start = TimeField(draft.Start, v => _draft.Start = v);
+        _end = TimeField(draft.End, v => _draft.End = v);
 
-        BuildHeader(inner);
-
-        _y += Brand.S(16);
-        SectionLabel("OPIS");
-        _text = new PromptTextField(row.Start, big: false, Palette.White.OverBlack(0.07), "npr. Projekt X — opis zadatka")
-        {
-            Location = new Point(Brand.S(Pad), _y),
-            Width = inner,
-        };
-        _text.Value = row.Text;
-        _text.ValueChanged += Sync;
-        _text.SubmitRequested += Save;
-        _text.EscapeRequested += Cancel;
-        Controls.Add(_text);
-        _y += _text.Height + Brand.S(6);
-
-        if (_history.Count > 0) BuildHistoryPicker(inner);
-
-        _y += Brand.S(10);
-        int col = Brand.S(120);
-        SectionLabelAt("OD", Brand.S(Pad));
-        SectionLabelAt("DO", Brand.S(Pad) + col);
-        var durationLabel = SectionLabelAt("TRAJANJE", Brand.S(Pad) + col * 2);
-        _y += durationLabel.Height + Brand.S(6);
-
-        (_startHour, _startMinute) = TimeCombos(row.Start, Brand.S(Pad));
-        (_endHour, _endMinute) = TimeCombos(row.End, Brand.S(Pad) + col);
-        _duration = new Label
-        {
-            AutoSize = false,
-            Font = Brand.Mono(9.5f, FontStyle.Bold),
-            ForeColor = Palette.Yellow,
-            BackColor = Palette.Black,
-            Location = new Point(Brand.S(Pad) + col * 2, _y + Brand.S(3)),
-            Size = new Size(Brand.S(80), Brand.S(20)),
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
+        _duration = new Label { AutoSize = false, Font = Brand.Mono(9.5f, FontStyle.Bold), BackColor = CardFill, TextAlign = ContentAlignment.MiddleLeft, Size = new Size(Brand.S(64), Brand.S(20)) };
         Controls.Add(_duration);
-        _y += _startHour.Height + Brand.S(6);
 
-        _y += Brand.S(14);
-        SectionLabel("VRSTA");
-        (_work, _pause) = BuildKindPills();
-        _y += Brand.S(28) + Brand.S(12);
+        _work = KindPill("Rad", EntryKind.Work);
+        _pause = KindPill("Pauza", EntryKind.Pause);
 
-        _warning = new Label
+        _text = new PromptTextField(day, big: false, Palette.White.OverBlack(0.07), "Opis — npr. Projekt X — opis zadatka") { BackColor = CardFill };
+        _text.Value = draft.Text;
+        _text.ValueChanged += () => { _draft.Text = _text.Value; Sync(); };
+        _text.SubmitRequested += Save;
+        _text.EscapeRequested += () => CancelRequested?.Invoke();
+        Controls.Add(_text);
+
+        if (history.Count > 0)
         {
-            AutoSize = false,
-            Font = Brand.Ui(8.5f),
-            BackColor = Palette.Black,
-            Location = new Point(Brand.S(Pad), _y),
-            Size = new Size(inner, Brand.S(18)),
-            TextAlign = ContentAlignment.MiddleLeft,
+            // macOS ovdje ima Menu; WinForms nema borderless menu gumb, pa je to drop-down
+            // koji se nakon odabira vrati na natpis.
+            var items = new List<string> { "Povijest…" };
+            items.AddRange(history);
+            _history = Dark.Combo(items.ToArray(), 0, Point.Empty, Brand.S(110));
+            _history.SelectedIndexChanged += (_, _) =>
+            {
+                if (_history.SelectedIndex <= 0) return;
+                _text.Value = items[_history.SelectedIndex];
+                _history.SelectedIndex = 0;
+                _text.FocusBox();
+            };
+            Controls.Add(_history);
+        }
+
+        _notice = new Label { AutoSize = false, Font = Brand.Ui(8.5f), BackColor = CardFill, TextAlign = ContentAlignment.TopLeft };
+        Controls.Add(_notice);
+
+        if (draft.Row is ChronoRow row)
+        {
+            _delete = new FlatButton
+            {
+                Text = row.IsMerged ? $"Obriši ({row.Ids.Count} bloka)" : "Obriši",
+                TextColor = DeleteRed, Fill = DeleteRed.With(0.12), CornerRadius = 8,
+                Font = Brand.Ui(9f, FontStyle.Bold), BackColor = CardFill,
+            };
+            _delete.Size = new Size(TextRenderer.MeasureText(_delete.Text, _delete.Font).Width + Brand.S(24), Brand.S(28));
+            _delete.Click += (_, _) => DeleteRequested?.Invoke();
+            Controls.Add(_delete);
+        }
+
+        _cancel = new FlatButton
+        {
+            Text = "Odustani", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1,
+            CornerRadius = 8, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = CardFill, Size = new Size(Brand.S(84), Brand.S(28)),
         };
-        Controls.Add(_warning);
-        _y += Brand.S(18) + Brand.S(10);
+        _cancel.Click += (_, _) => CancelRequested?.Invoke();
+        Controls.Add(_cancel);
 
-        _save = BuildFooter(inner);
-        _y += Brand.S(30) + Brand.S(Pad);
-        ClientSize = new Size(Brand.S(FormWidth), _y);
+        _save = new FlatButton
+        {
+            Text = draft.Row == null ? "Dodaj" : "Spremi", TextColor = Palette.Black, Fill = Palette.Yellow,
+            CornerRadius = 8, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = CardFill, Size = new Size(Brand.S(84), Brand.S(28)),
+        };
+        _save.Click += (_, _) => Save();
+        Controls.Add(_save);
 
+        Height = Brand.S(Pad) + _start.Height + Brand.S(8) + _text.Height + Brand.S(6) + Brand.S(30) + Brand.S(6) + Brand.S(28) + Brand.S(Pad);
         Sync();
     }
 
     // MARK: - Building blocks
 
-    private void BuildHeader(int inner)
+    private TrackedLabel SectionLabel(string title)
     {
-        var square = new Panel
-        {
-            BackColor = Palette.Yellow,
-            Size = new Size(Brand.S(16), Brand.S(16)),
-            Location = new Point(Brand.S(Pad), _y),
-        };
-        Controls.Add(square);
-
-        var title = new TrackedLabel
-        {
-            Text = "ISPRAVI UNOS",
-            Font = Brand.Ui(10f, FontStyle.Bold),
-            ForeColor = Palette.White,
-            Tracking = 1.5f,
-            BackColor = Palette.Black,
-        };
-        title.Location = new Point(square.Right + Brand.S(8), _y + (Brand.S(16) - title.Height) / 2);
-        Controls.Add(title);
-
-        var day = new Label
-        {
-            AutoSize = false,
-            Text = Fmt.DayTitle(_row.Start),
-            Font = Brand.Ui(8.5f),
-            ForeColor = Palette.Gray.With(0.7),
-            BackColor = Palette.Black,
-            Size = new Size(Brand.S(180), Brand.S(16)),
-            TextAlign = ContentAlignment.MiddleRight,
-            Location = new Point(Brand.S(Pad) + inner - Brand.S(180), _y),
-        };
-        Controls.Add(day);
-        _y += Brand.S(16);
-    }
-
-    /// <summary>"Iz povijesti…" — macOS ovdje ima Menu; WinForms nema borderless menu gumb,
-    /// pa je to drop-down koji se nakon odabira vrati na natpis.</summary>
-    private void BuildHistoryPicker(int inner)
-    {
-        var items = new List<string> { "Iz povijesti…" };
-        items.AddRange(_history);
-        var combo = Dark.Combo(items.ToArray(), 0, new Point(Brand.S(Pad), _y), Math.Min(inner, Brand.S(200)));
-        combo.SelectedIndexChanged += (_, _) =>
-        {
-            if (combo.SelectedIndex <= 0) return;
-            _text.Value = items[combo.SelectedIndex];
-            combo.SelectedIndex = 0;
-            Sync();
-        };
-        Controls.Add(combo);
-        _y += combo.Height + Brand.S(4);
-    }
-
-    private (ComboBox Hour, ComboBox Minute) TimeCombos(DateTime value, int x)
-    {
-        var hours = Enumerable.Range(0, 24).Select(h => $"{h:D2}").ToArray();
-        var minutes = Enumerable.Range(0, 60).Select(m => $"{m:D2}").ToArray();
-        int w = Brand.S(50);
-
-        var hour = Dark.Combo(hours, value.Hour, new Point(x, _y), w);
-        var minute = Dark.Combo(minutes, value.Minute, new Point(x + w + Brand.S(4), _y), w);
-        hour.SelectedIndexChanged += (_, _) => Sync();
-        minute.SelectedIndexChanged += (_, _) => Sync();
-        Controls.Add(hour);
-        Controls.Add(minute);
-        return (hour, minute);
-    }
-
-    private (FlatButton Work, FlatButton Pause) BuildKindPills()
-    {
-        FlatButton Pill(string title, EntryKind kind, int x)
-        {
-            var font = Brand.Ui(9.5f, FontStyle.Bold);
-            var pill = new FlatButton
-            {
-                Text = title,
-                CornerRadius = 8,
-                Font = font,
-                BackColor = Palette.Black,
-                Size = new Size(Brand.S(84), Brand.S(28)),
-                Location = new Point(x, _y),
-            };
-            pill.Click += (_, _) => { _kind = kind; Sync(); };
-            Controls.Add(pill);
-            return pill;
-        }
-
-        var work = Pill("Rad", EntryKind.Work, Brand.S(Pad));
-        var pause = Pill("Pauza", EntryKind.Pause, Brand.S(Pad) + Brand.S(84) + Brand.S(6));
-        return (work, pause);
-    }
-
-    private FlatButton BuildFooter(int inner)
-    {
-        var save = new FlatButton
-        {
-            Text = "Spremi",
-            TextColor = Palette.Black,
-            Fill = Palette.Yellow,
-            CornerRadius = 10,
-            Font = Brand.Ui(10f, FontStyle.Bold),
-            BackColor = Palette.Black,
-            Size = new Size(Brand.S(88), Brand.S(30)),
-        };
-        save.Location = new Point(Brand.S(Pad) + inner - save.Width, _y);
-        save.Click += (_, _) => Save();
-        Controls.Add(save);
-
-        var cancel = new FlatButton
-        {
-            Text = "Odustani",
-            TextColor = Palette.Gray,
-            Fill = Color.Transparent,
-            BorderColor = Palette.White.OverBlack(0.2),
-            BorderWidth = 1,
-            CornerRadius = 10,
-            Font = Brand.Ui(10f, FontStyle.Bold),
-            BackColor = Palette.Black,
-            Size = new Size(Brand.S(88), Brand.S(30)),
-        };
-        cancel.Location = new Point(save.Left - Brand.S(10) - cancel.Width, _y);
-        cancel.Click += (_, _) => Cancel();
-        Controls.Add(cancel);
-
-        return save;
-    }
-
-    private void SectionLabel(string title)
-        => _y += SectionLabelAt(title, Brand.S(Pad)).Height + Brand.S(6);
-
-    private TrackedLabel SectionLabelAt(string title, int x)
-    {
-        var label = new TrackedLabel
-        {
-            Text = title,
-            Font = Brand.Ui(7.5f, FontStyle.Bold),
-            ForeColor = Palette.Gray.With(0.6),
-            Tracking = 1.2f,
-            BackColor = Palette.Black,
-            Location = new Point(x, _y),
-        };
+        var label = new TrackedLabel { Text = title, Font = Brand.Ui(7.5f, FontStyle.Bold), ForeColor = Palette.Gray.With(0.6), Tracking = 1.2f, BackColor = CardFill };
         Controls.Add(label);
         return label;
     }
 
+    /// <summary>Polje za vrijeme: upisuje se rukom ("930", "9:30"), a strelice ↑/↓ pomiču za
+    /// 5 minuta. Napušteno polje se uredi u HH:mm.</summary>
+    private PromptTextField TimeField(string value, Action<string> store)
+    {
+        var field = new PromptTextField(_day, big: false, Palette.White.OverBlack(0.07), "hh:mm") { BackColor = CardFill, Width = Brand.S(70) };
+        field.UseTimeStyle();
+        field.Value = value;
+        field.ValueChanged += () => { store(field.Value); Sync(); };
+        field.SubmitRequested += Save;
+        field.EscapeRequested += () => CancelRequested?.Invoke();
+        field.HistoryOlder += () => Step(field, 5);
+        field.HistoryNewer += () => Step(field, -5);
+        field.FocusLost += () =>
+        {
+            if (Fmt.ParseTime(field.Value) is { } t) field.Value = $"{t.Hour:D2}:{t.Minute:D2}";
+        };
+        Controls.Add(field);
+        return field;
+    }
+
+    private static void Step(PromptTextField field, int minutes)
+    {
+        if (Fmt.ParseTime(field.Value) is not { } t) return;
+        int total = Math.Clamp(t.Hour * 60 + t.Minute + minutes, 0, 23 * 60 + 59);
+        field.Value = $"{total / 60:D2}:{total % 60:D2}";
+    }
+
+    private FlatButton KindPill(string title, EntryKind kind)
+    {
+        var pill = new FlatButton { Text = title, CornerRadius = 8, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = CardFill, Size = new Size(Brand.S(64), Brand.S(28)) };
+        pill.Click += (_, _) => { _draft.Kind = kind; Sync(); };
+        Controls.Add(pill);
+        return pill;
+    }
+
+    // MARK: - Layout
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        if (_save == null) return;
+        int pad = Brand.S(Pad);
+        int right = Width - pad;
+
+        int y = pad;
+        int mid = y + _start.Height / 2;
+        int x = pad;
+        _fromLabel.Location = new Point(x, mid - _fromLabel.Height / 2);
+        x = _fromLabel.Right + Brand.S(6);
+        _start.Location = new Point(x, y);
+        x = _start.Right + Brand.S(10);
+        _toLabel.Location = new Point(x, mid - _toLabel.Height / 2);
+        x = _toLabel.Right + Brand.S(6);
+        _end.Location = new Point(x, y);
+        _duration.Location = new Point(_end.Right + Brand.S(10), mid - _duration.Height / 2);
+        _pause.Location = new Point(right - _pause.Width, mid - _pause.Height / 2);
+        _work.Location = new Point(_pause.Left - Brand.S(4) - _work.Width, _pause.Top);
+
+        y += _start.Height + Brand.S(8);
+        int textRight = right;
+        if (_history != null)
+        {
+            _history.Location = new Point(right - _history.Width, y + (_text.Height - _history.Height) / 2);
+            textRight = _history.Left - Brand.S(8);
+        }
+        _text.SetBounds(pad, y, Math.Max(Brand.S(80), textRight - pad), _text.Height);
+
+        y += _text.Height + Brand.S(6);
+        _notice.SetBounds(pad, y, Width - pad * 2, Brand.S(30));
+
+        y += Brand.S(30) + Brand.S(6);
+        _save.Location = new Point(right - _save.Width, y);
+        _cancel.Location = new Point(_save.Left - Brand.S(8) - _cancel.Width, y);
+        if (_delete != null) _delete.Location = new Point(pad, y);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(BackColor);
+        using var path = Brand.RoundedRect(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), Brand.Sf(8));
+        using (var b = new SolidBrush(CardFill)) g.FillPath(b, path);
+        using var pen = new Pen(Palette.Yellow.With(0.5), 1f);
+        g.DrawPath(pen, path);
+    }
+
     // MARK: - State
 
-    private static DateTime Combine(DateTime day, ComboBox hour, ComboBox minute)
-        => day.Date.AddHours(Math.Max(0, hour.SelectedIndex)).AddMinutes(Math.Max(0, minute.SelectedIndex));
+    private DateTime? StartDate => Fmt.ParseTime(_draft.Start) is { } t ? Fmt.At(_day, t.Hour, t.Minute) : null;
+    private DateTime? EndDate => Fmt.ParseTime(_draft.End) is { } t ? Fmt.At(_day, t.Hour, t.Minute) : null;
+    private bool RangeOk => StartDate is DateTime s && EndDate is DateTime e && e > s;
+    private bool IsValid => _draft.Text.Trim().Length > 0 && RangeOk;
 
     private bool TimesChanged
-        => Math.Abs((EntryStart - _row.Start).TotalSeconds) > 1
-            || Math.Abs((EntryEnd - _row.End).TotalSeconds) > 1;
+        => _draft.Row is not ChronoRow row || StartDate is not DateTime s || EndDate is not DateTime e
+            || Math.Abs((s - row.Start).TotalSeconds) > 1 || Math.Abs((e - row.End).TotalSeconds) > 1;
 
-    private bool IsValid => EntryText.Length > 0 && EntryEnd > EntryStart;
+    /// <summary>Unosi koje će spremanje skratiti ili maknuti.</summary>
+    private int OverlapCount
+        => RangeOk && TimesChanged
+            ? Summarize.Overlapping(_entries(), StartDate!.Value, EndDate!.Value, _draft.Row?.Ids).Count
+            : 0;
 
     /// <summary>Trajanje, upozorenja i stanje gumba nakon svake promjene — trajanje nakon
-    /// ispravka je odmah vidljivo.</summary>
+    /// izmjene je odmah vidljivo.</summary>
     private void Sync()
     {
-        bool ok = EntryEnd > EntryStart;
-        _duration.Text = Fmt.Dur(Math.Max(0, (EntryEnd - EntryStart).TotalSeconds));
-        _duration.ForeColor = ok ? Palette.Yellow : Color.Orange;
+        bool startOk = StartDate != null, endOk = EndDate != null;
+        _start.BorderOverride = startOk ? null : Palette.Orange;
+        _end.BorderOverride = endOk ? null : Palette.Orange;
+        _start.Invalidate();
+        _end.Invalidate();
 
-        if (!ok)
+        _duration.Text = startOk && endOk ? Fmt.Dur(Math.Max(0, (EndDate!.Value - StartDate!.Value).TotalSeconds)) : "—";
+        _duration.ForeColor = RangeOk ? Palette.Yellow : Palette.Orange;
+
+        if (!startOk || !endOk)
         {
-            _warning.Text = "Kraj mora biti nakon početka.";
-            _warning.ForeColor = Color.Orange;
+            _notice.Text = "Vrijeme upiši kao 9:30 ili 0930.";
+            _notice.ForeColor = Palette.Orange;
         }
-        else if (_row.IsMerged && TimesChanged)
+        else if (!RangeOk)
         {
-            _warning.Text = $"Promjena vremena stapa {_row.Ids.Count} bloka u jedan unos.";
-            _warning.ForeColor = Palette.Yellow.With(0.8);
+            _notice.Text = "Kraj mora biti nakon početka.";
+            _notice.ForeColor = Palette.Orange;
         }
         else
         {
-            _warning.Text = "";
+            var parts = new List<string>();
+            if (_draft.Row is ChronoRow row && row.IsMerged && TimesChanged)
+                parts.Add($"Promjena vremena stapa {row.Ids.Count} bloka u jedan unos.");
+            int n = OverlapCount;
+            if (n > 0)
+                parts.Add($"Preklapa se s {n} {(n == 1 ? "unosom" : "unosa")} — ovaj unos zamjenjuje preklopljeni dio.");
+            _notice.Text = string.Join(" ", parts);
+            _notice.ForeColor = Palette.Yellow.OverBlack(0.85);
         }
 
-        bool work = _kind == EntryKind.Work;
+        bool work = _draft.Kind == EntryKind.Work;
         StylePill(_work, work);
         StylePill(_pause, !work);
 
@@ -321,29 +312,8 @@ internal sealed class EntryEditForm : Form
     private void Save()
     {
         if (!IsValid) return;
-        DialogResult = DialogResult.OK;
-        Close();
+        SaveRequested?.Invoke(_draft.Text.Trim(), StartDate!.Value, EndDate!.Value, _draft.Kind);
     }
 
-    private void Cancel()
-    {
-        DialogResult = DialogResult.Cancel;
-        Close();
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.Escape)
-        {
-            Cancel();
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
-    protected override void OnShown(EventArgs e)
-    {
-        base.OnShown(e);
-        _text.FocusBox();
-    }
+    public void FocusText() => _text.FocusBox();
 }

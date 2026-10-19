@@ -145,6 +145,7 @@ struct AutoStopWarningView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(Color.white.opacity(0.2), lineWidth: 1)
                 )
+                .clickArea(cornerRadius: 8)
             }
             .buttonStyle(.plain)
         }

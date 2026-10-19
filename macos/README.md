@@ -72,13 +72,22 @@ Ikona (`AppIcon.icns`) se generira kod builda iz istog koda kao pločica u traci
 
 ### Pregled dana
 
-Dva taba: **Grupirano** (zbrojeno po opisu) i **Kronološki** (unos po unos, s ispravkom i
-brisanjem).
+Dva taba: **Grupirano** (zbrojeno po opisu) i **Kronološki** (unos po unos, s ispravkom,
+dodavanjem i brisanjem).
 
-Svaki red u kronološkom tabu ima `✏️` — **Ispravi unos**: opis (uz padajući izbor iz povijesti),
-vrijeme *od*/*do* i vrsta (rad/pauza). Radi i za prijašnje dane. Kod spojenog reda (`2×`)
-promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan unos** —
-novi raspon nema stare granice blokova (sheet na to i upozori).
+Klik na bilo koji red u tabu **Kronološki** otvara **uređivač na mjestu reda**: vrijeme
+*od*/*do* upisuje se rukom (`9:30`, `930`, `9`…; strelice ↑/↓ pomiču za 5 min), uz opis (s
+izborom iz povijesti) i vrstu (rad/pauza). Trajanje se računa uživo, Enter sprema, Esc
+odustaje, a **Obriši** je u istom uređivaču. Radi i za prijašnje dane. Kod spojenog reda
+(`2×`) promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan
+unos** — novi raspon nema stare granice blokova (uređivač na to i upozori).
+
+**Dodavanje unosa:** nezabilježeno vrijeme između unosa (≥ 1 min) prikazuje se kao
+isprekidani red `+ 10:15–10:45 nezabilježeno · 30m` — klik ga popuni novim unosom. Gumb
+**+ Dodaj unos** na dnu (i u praznom danu) predlaže raspon od kraja zadnjeg unosa (ili
+početka radnog dana) u trajanju jednog intervala. Ako se novi ili ispravljeni unos preklapa
+s drugima, **on ima prednost**: preklopljeni dio ostalih unosa se odreže (ili ih razdvoji
+ili makne) — uređivač prije spremanja javi s koliko se unosa preklapa.
 
 U kronološkom tabu opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -207,9 +216,9 @@ Sources/LloydsTracker/
 ├── PromptController.swift # NSPanel (floating) / NSWindow (fullscreen)
 ├── PromptView.swift       # UI prompta: povijest, pre-fill, preskakanje, "nastavljam s"
 ├── MenuBarView.swift      # popover iz status bara
-├── SummaryView.swift      # pregled dana, ispravak/brisanje unosa, copy/CSV export
+├── SummaryView.swift      # pregled dana, ispravak/dodavanje/brisanje unosa, copy/CSV export
 ├── SettingsView.swift     # postavke
-├── EntryEditView.swift    # sheet za ispravak unosa (Pregled dana → Kronološki)
+├── EntryEditView.swift    # uređivač unosa na mjestu reda (Pregled dana → Kronološki)
 ├── StartupReminder.swift  # pop-up podsjetnik (pokretanje + početak radnog dana)
 ├── AutoStopWarning.swift  # upozorenje 1 min prije auto-stopa + produženja
 ├── UpdateChecker.swift    # provjera nove verzije (GitHub releases/latest)

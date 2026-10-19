@@ -150,7 +150,7 @@ struct GroupSummary: Identifiable {
 }
 
 /// Red kronološkog pregleda — jedan unos ili niz spojenih susjednih unosa istog naziva.
-struct ChronoRow: Identifiable {
+struct ChronoRow: Identifiable, Hashable {
     var ids: [UUID]
     var start: Date
     var end: Date
@@ -162,7 +162,79 @@ struct ChronoRow: Identifiable {
     var isMerged: Bool { ids.count > 1 }
 }
 
+/// Stavka kronološkog pregleda: red s unosom ili rupa između dva unosa (nezabilježeno
+/// vrijeme) — rupa se klikom popuni novim unosom.
+enum TimelineItem: Identifiable {
+    case row(ChronoRow)
+    case gap(start: Date, end: Date)
+
+    var id: String {
+        switch self {
+        case .row(let r): return r.id.uuidString
+        case .gap(let s, _): return "gap-\(s.timeIntervalSince1970)"
+        }
+    }
+}
+
 enum Summarize {
+    /// Redovi kronološkog pregleda s rupama između njih. Rupa je razmak od barem minute
+    /// između kraja dosad najkasnijeg unosa i početka sljedećeg.
+    static func timeline(_ rows: [ChronoRow]) -> [TimelineItem] {
+        var items: [TimelineItem] = []
+        var lastEnd: Date?
+        for row in rows {
+            if let last = lastEnd, row.start.timeIntervalSince(last) >= 60 {
+                items.append(.gap(start: last, end: row.start))
+            }
+            items.append(.row(row))
+            lastEnd = max(lastEnd ?? row.end, row.end)
+        }
+        return items
+    }
+
+    /// Unosi koji se preklapaju s rasponom (bez onih koje upravo ispravljamo).
+    static func overlapping(_ entries: [Entry], start: Date, end: Date, excluding ids: Set<UUID> = []) -> [Entry] {
+        entries.filter { !ids.contains($0.id) && $0.start < end && $0.end > start }
+    }
+
+    /// Novi/ispravljeni unos "pobjeđuje": ostali unosi se skrate, razdvoje ili maknu tako
+    /// da ništa ne pokriva `start…end` — inače bi se isto vrijeme brojalo dvaput.
+    static func carve(_ day: inout [Entry], start: Date, end: Date, excluding ids: Set<UUID> = []) {
+        var out: [Entry] = []
+        for e in day {
+            guard !ids.contains(e.id), e.start < end, e.end > start else {
+                out.append(e)
+                continue
+            }
+            if e.start < start {
+                var head = e
+                head.end = start
+                out.append(head)
+            }
+            if e.end > end {
+                var tail = e
+                // Ako je i glava ostala, rep je novi unos (ne smiju dijeliti id).
+                if e.start < start { tail.id = UUID() }
+                tail.start = end
+                out.append(tail)
+            }
+        }
+        day = out
+    }
+
+    /// Prijedlog raspona za "Dodaj unos": od kraja zadnjeg unosa (ili početka radnog
+    /// dana ako ih nema) u trajanju jednog intervala, unutar istog dana.
+    static func suggestedRange(_ entries: [Entry], day: Date, settings: AppSettings) -> (start: Date, end: Date) {
+        let cal = Calendar.current
+        let dayStart = cal.startOfDay(for: day)
+        let dayEnd = dayStart.addingTimeInterval(24 * 3600 - 60)
+        let workday = Fmt.at(day, hour: settings.workdayStartHour, minute: settings.workdayStartMinute)
+        let start = min(entries.map(\.end).max() ?? workday, dayEnd.addingTimeInterval(-60))
+        let end = min(start.addingTimeInterval(TimeInterval(settings.intervalMinutes * 60)), dayEnd)
+        return (start, end)
+    }
+
+
     /// Kronološki popis unosa. Uz `merging` susjedni unosi istog naziva i vrste, gdje
     /// jedan završava kad drugi počinje, čine jedan red (14:45–15:00 + 15:00–15:15 →
     /// 14:45–15:15). Spajaju se samo neposredni susjedi, pa pauza ili drugi opis između

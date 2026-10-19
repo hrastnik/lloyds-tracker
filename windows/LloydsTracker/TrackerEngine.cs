@@ -339,7 +339,8 @@ public sealed class TrackerEngine : IDisposable
     /// <summary>Corrects the entry (or entries) behind one row of the chronological view. If the
     /// times are unchanged, only the text and kind of every block in the row change (a merged row
     /// stays merged). If the times changed, the row becomes a <b>single</b> entry — the new range
-    /// can't be split along the old block boundaries in any meaningful way.</summary>
+    /// can't be split along the old block boundaries in any meaningful way — and the overlapping
+    /// part of other entries is cut away.</summary>
     public void UpdateEntries(
         ChronoRow row, string dayKey, string text, DateTime start, DateTime end, EntryKind kind)
     {
@@ -354,6 +355,7 @@ public sealed class TrackerEngine : IDisposable
             if (timesChanged)
             {
                 day.RemoveAll(e => ids.Contains(e.Id));
+                Summarize.Carve(day, start, end);
                 day.Add(new Entry(start, end, clean, kind) { Id = row.Ids[0] });
             }
             else
@@ -378,6 +380,36 @@ public sealed class TrackerEngine : IDisposable
             Apply(day);
             Store.SaveDay(dayKey, day);
         }
+        if (kind == EntryKind.Work && clean != row.Text) PushHistory(clean);
+        RaiseChanged();
+    }
+
+    /// <summary>An entry added by hand from the chronological view (e.g. filling a gap). The
+    /// overlapping part of existing entries is cut away — the new entry takes precedence.</summary>
+    public void AddEntry(string dayKey, string text, DateTime start, DateTime end, EntryKind kind)
+    {
+        string clean = text.Trim();
+        if (clean.Length == 0 || end <= start) return;
+
+        void Apply(List<Entry> day)
+        {
+            Summarize.Carve(day, start, end);
+            day.Add(new Entry(start, end, clean, kind));
+            day.Sort((a, b) => a.Start.CompareTo(b.Start));
+        }
+
+        if (dayKey == CurrentDayKey)
+        {
+            Apply(Entries);
+            Store.SaveDay(CurrentDayKey, Entries);
+        }
+        else
+        {
+            var day = Store.LoadDay(dayKey);
+            Apply(day);
+            Store.SaveDay(dayKey, day);
+        }
+        if (kind == EntryKind.Work) PushHistory(clean);
         RaiseChanged();
     }
 

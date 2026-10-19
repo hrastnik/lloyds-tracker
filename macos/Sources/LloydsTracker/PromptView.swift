@@ -222,11 +222,16 @@ struct PromptView: View {
                 HStack(spacing: 10) {
                     Spacer(minLength: 0)
                     if request.allowSnooze {
-                        Button("Odgodi 5 min", action: onSnooze)
-                            .buttonStyle(.plain)
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.lloydsGray)
-                            .underline()
+                        Button(action: onSnooze) {
+                            Text("Odgodi 5 min")
+                                .underline()
+                                .padding(.vertical, 5)
+                                .padding(.horizontal, 6)
+                                .clickArea()
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.lloydsGray)
                     }
                     Button(action: skip) {
                         Text("Preskoči")
@@ -239,6 +244,7 @@ struct PromptView: View {
                                 RoundedRectangle(cornerRadius: 6)
                                     .stroke(Color.white.opacity(0.22), lineWidth: 1)
                             )
+                            .clickArea(cornerRadius: 6)
                     }
                     .buttonStyle(.plain)
                     .help("Ne bilježi ništa — period se vraća u sljedeći prompt")
@@ -278,7 +284,7 @@ struct PromptView: View {
                     ForEach(boundaries, id: \.self) { b in
                         let x = CGFloat(b.timeIntervalSince(periodStart) / total) * w
                         splitHandle(b)
-                            .offset(x: x - 10, y: 0)
+                            .offset(x: x - 14, y: -4)
                     }
                 }
                 .animation(.easeOut(duration: 0.15), value: splitPoints)
@@ -316,6 +322,7 @@ struct PromptView: View {
                     .foregroundStyle(isSplit ? Color.lloydsYellow : Color.lloydsGray)
             }
             .frame(width: 20, height: 20)
+            .frame(width: 28, height: 28)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)

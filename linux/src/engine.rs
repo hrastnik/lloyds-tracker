@@ -411,7 +411,7 @@ impl TrackerEngine {
     /// Ispravlja unos (ili unose) iza jednog reda kronološkog pregleda. Ako vremena ostanu
     /// ista, mijenja se samo opis i vrsta svakog bloka u redu (spojeni red ostaje spojen). Ako
     /// su vremena promijenjena, red postaje **jedan** unos — novi raspon se nema smisla
-    /// razbijati po starim granicama blokova.
+    /// razbijati po starim granicama blokova — a preklopljeni dio drugih unosa se reže.
     pub fn update_entries(
         &mut self,
         row: &ChronoRow,
@@ -433,6 +433,7 @@ impl TrackerEngine {
         let apply = |day: &mut Vec<Entry>| {
             if times_changed {
                 day.retain(|e| !ids.contains(&e.id));
+                Summarize::carve(day, start, end, &[]);
                 let mut entry = Entry::new(start, end, clean.clone(), kind);
                 entry.id = keep_id;
                 day.push(entry);
@@ -454,6 +455,45 @@ impl TrackerEngine {
             let mut day = Store::load_day(day_key);
             apply(&mut day);
             Store::save_day(day_key, &day);
+        }
+        if kind == EntryKind::Work && clean != row.text {
+            self.push_history(&clean);
+        }
+    }
+
+    /// Ručno dodan unos iz kronološkog pregleda (npr. popunjavanje rupe). Preklopljeni dio
+    /// postojećih unosa se reže — novi unos ima prednost.
+    pub fn add_entry(
+        &mut self,
+        day_key: &str,
+        text: &str,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+        kind: EntryKind,
+    ) {
+        let clean = text.trim().to_string();
+        if clean.is_empty() || end <= start {
+            return;
+        }
+
+        let apply = |day: &mut Vec<Entry>| {
+            Summarize::carve(day, start, end, &[]);
+            day.push(Entry::new(start, end, clean.clone(), kind));
+            day.sort_by_key(|e| e.start);
+        };
+
+        if day_key == self.current_day_key {
+            let mut day = std::mem::take(&mut self.entries);
+            apply(&mut day);
+            self.entries = day;
+            Store::save_day(&self.current_day_key, &self.entries);
+        } else {
+            let mut day = Store::load_day(day_key);
+            apply(&mut day);
+            Store::save_day(day_key, &day);
+        }
+        if kind == EntryKind::Work {
+            self.push_history(&clean);
         }
     }
 

@@ -276,7 +276,7 @@ pub struct GroupSummary {
 }
 
 /// Red kronološkog pregleda — jedan unos ili niz spojenih susjednih unosa istog naziva.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChronoRow {
     pub ids: Vec<Uuid>,
     pub start: DateTime<Local>,
@@ -295,9 +295,89 @@ impl ChronoRow {
     }
 }
 
+/// Stavka kronološkog pregleda: red s unosom ili rupa između dva unosa (nezabilježeno
+/// vrijeme) — rupa se klikom popuni novim unosom.
+#[derive(Debug, Clone)]
+pub enum TimelineItem {
+    Row(ChronoRow),
+    Gap(DateTime<Local>, DateTime<Local>),
+}
+
 pub struct Summarize;
 
 impl Summarize {
+    /// Redovi kronološkog pregleda s rupama između njih. Rupa je razmak od barem minute
+    /// između kraja dosad najkasnijeg unosa i početka sljedećeg.
+    pub fn timeline(rows: &[ChronoRow]) -> Vec<TimelineItem> {
+        let mut items = Vec::new();
+        let mut last_end: Option<DateTime<Local>> = None;
+        for row in rows {
+            if let Some(last) = last_end {
+                if (row.start - last).num_seconds() >= 60 {
+                    items.push(TimelineItem::Gap(last, row.start));
+                }
+            }
+            items.push(TimelineItem::Row(row.clone()));
+            last_end = Some(last_end.map_or(row.end, |l| l.max(row.end)));
+        }
+        items
+    }
+
+    /// Unosi koji se preklapaju s rasponom (bez onih koje upravo ispravljamo).
+    pub fn overlapping<'a>(
+        entries: &'a [Entry],
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+        excluding: &[Uuid],
+    ) -> Vec<&'a Entry> {
+        entries
+            .iter()
+            .filter(|e| !excluding.contains(&e.id) && e.start < end && e.end > start)
+            .collect()
+    }
+
+    /// Novi/ispravljeni unos "pobjeđuje": ostali unosi se skrate, razdvoje ili maknu tako
+    /// da ništa ne pokriva `start…end` — inače bi se isto vrijeme brojalo dvaput.
+    pub fn carve(day: &mut Vec<Entry>, start: DateTime<Local>, end: DateTime<Local>, excluding: &[Uuid]) {
+        let mut out = Vec::with_capacity(day.len() + 1);
+        for e in day.drain(..) {
+            if excluding.contains(&e.id) || !(e.start < end && e.end > start) {
+                out.push(e);
+                continue;
+            }
+            if e.start < start {
+                let mut head = e.clone();
+                head.end = start;
+                out.push(head);
+            }
+            if e.end > end {
+                let mut tail = e.clone();
+                // Ako je i glava ostala, rep je novi unos (ne smiju dijeliti id).
+                if e.start < start {
+                    tail.id = Uuid::new_v4();
+                }
+                tail.start = end;
+                out.push(tail);
+            }
+        }
+        *day = out;
+    }
+
+    /// Prijedlog raspona za "Dodaj unos": od kraja zadnjeg unosa (ili početka radnog dana
+    /// ako ih nema) u trajanju jednog intervala, unutar istog dana.
+    pub fn suggested_range(
+        entries: &[Entry],
+        day: DateTime<Local>,
+        settings: &AppSettings,
+    ) -> (DateTime<Local>, DateTime<Local>) {
+        let day_end = Fmt::at(day, 23, 59);
+        let workday = Fmt::at(day, settings.workday_start_hour, settings.workday_start_minute);
+        let last = entries.iter().map(|e| e.end).max().unwrap_or(workday);
+        let start = last.min(day_end - chrono::Duration::minutes(1));
+        let end = (start + chrono::Duration::minutes(settings.interval_minutes)).min(day_end);
+        (start, end)
+    }
+
     /// Kronološki popis unosa. Uz `merging` susjedni unosi istog naziva i vrste, gdje
     /// jedan završava kad drugi počinje, čine jedan red (14:45–15:00 + 15:00–15:15 →
     /// 14:45–15:15). Spajaju se samo neposredni susjedi, pa pauza ili drugi opis između
@@ -415,5 +495,49 @@ impl Summarize {
             );
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Fmt;
+
+    fn at(h: u32, m: u32) -> DateTime<Local> {
+        Fmt::at(Local::now(), h, m)
+    }
+
+    #[test]
+    fn carve_trims_splits_and_removes() {
+        let mut day = vec![
+            Entry::new(at(9, 0), at(10, 0), "A", EntryKind::Work),
+            Entry::new(at(10, 0), at(10, 30), "B", EntryKind::Work),
+            Entry::new(at(10, 30), at(12, 0), "C", EntryKind::Work),
+        ];
+        let c_id = day[2].id;
+        // 9:45–11:00 skrati A, makne B, odreže početak C-a.
+        Summarize::carve(&mut day, at(9, 45), at(11, 0), &[]);
+        let ranges: Vec<_> = day.iter().map(|e| (e.text.as_str(), e.start, e.end)).collect();
+        assert_eq!(ranges, vec![("A", at(9, 0), at(9, 45)), ("C", at(11, 0), at(12, 0))]);
+        assert_eq!(day[1].id, c_id);
+
+        // Unos usred dugog unosa ga razdvoji; rep dobije novi id.
+        Summarize::carve(&mut day, at(11, 15), at(11, 30), &[]);
+        assert_eq!(day.len(), 3);
+        assert_eq!((day[1].start, day[1].end, day[1].id), (at(11, 0), at(11, 15), c_id));
+        assert_eq!((day[2].start, day[2].end), (at(11, 30), at(12, 0)));
+        assert_ne!(day[2].id, c_id);
+    }
+
+    #[test]
+    fn timeline_shows_gaps() {
+        let entries = vec![
+            Entry::new(at(9, 0), at(10, 0), "A", EntryKind::Work),
+            Entry::new(at(10, 30), at(11, 0), "B", EntryKind::Work),
+        ];
+        let rows = Summarize::chronology(&entries, false);
+        let items = Summarize::timeline(&rows);
+        assert_eq!(items.len(), 3);
+        assert!(matches!(items[1], TimelineItem::Gap(s, e) if s == at(10, 0) && e == at(10, 30)));
     }
 }
