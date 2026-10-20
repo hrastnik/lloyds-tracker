@@ -42,10 +42,14 @@ public sealed class TrackerEngine : IDisposable
     /// <summary>Skipped periods that aren't adjacent to the next prompt (e.g. a pause in
     /// between) — carried forward as separate rows until they get filled in or the day ends.</summary>
     private readonly List<PromptSpan> _carriedSpans = new();
+    /// <summary>An absence whose return prompt (work before the absence) hasn't been answered — if
+    /// Stop or Pause closes it, the work before the absence is carried and the period starts at
+    /// the return.</summary>
+    private PromptRequest.PendingPause? _pendingReturn;
     /// <summary>The day is closed and the final prompt is still waiting for an answer — nothing
     /// more gets scheduled, and the day must not be closed a second time (a tick would otherwise
     /// loop the same prompt forever).</summary>
-    private bool _awaitingFinalAnswer;
+    public bool AwaitingFinalAnswer { get; private set; }
     private DateTime? _pausedSince;
     private readonly SessionMonitor _session = new();
     private readonly WinFormsTimer _timer;
@@ -55,6 +59,14 @@ public sealed class TrackerEngine : IDisposable
     private bool _autoStopWarningShown;
     /// <summary>How long before the automatic stop the warning pops up.</summary>
     private const double AutoStopLead = 60;
+    /// <summary>Time of the last tick — a big gap until the next one means the computer slept.</summary>
+    private DateTime? _lastTickAt;
+    /// <summary>The gap between ticks after which we assume the computer slept (lid closed).</summary>
+    private static readonly TimeSpan SleepGap = TimeSpan.FromMinutes(30);
+    /// <summary>Ticks run every second — a bigger gap means the computer slept in between. A lock
+    /// reported only after such a gap (lid closed right after locking, the event delivered on
+    /// resume) happened at the latest at the last tick before the sleep.</summary>
+    private static readonly TimeSpan LockTickGap = TimeSpan.FromSeconds(5);
     /// <summary>The day (dayKey) whose work-day-start reminder is done with — shown, or the
     /// day got started meanwhile. Kept in memory: after an app restart the launch reminder
     /// takes over the role anyway.</summary>
@@ -71,8 +83,10 @@ public sealed class TrackerEngine : IDisposable
     /// back onto the UI thread.</summary>
     private readonly Control _marshal = new();
 
-    /// <summary>Set by the view layer — opens the "Pregled dana" window.</summary>
-    public Action OpenSummary { get; set; } = () => { };
+    /// <summary>Set by the view layer — opens the "Pregled dana" window on the given day (the end
+    /// of the day opens it on the day just closed — yesterday after a final prompt left overnight,
+    /// not today's empty day).</summary>
+    public Action<DateTime> OpenSummary { get; set; } = _ => { };
 
     public double Interval => Settings.IntervalMinutes * 60.0;
     public bool IsPromptVisible => _prompt.IsVisible;
@@ -146,7 +160,8 @@ public sealed class TrackerEngine : IDisposable
         AwaitingReturnSince = null;
         _activePromptEnd = null;
         _carriedSpans.Clear();
-        _awaitingFinalAnswer = false;
+        _pendingReturn = null;
+        AwaitingFinalAnswer = false;
         NextPromptAt = AlignedNextPrompt(now);
         _autoStopWarningShown = false;
         AutoStopAt = NextAutoStop(now);
@@ -171,12 +186,13 @@ public sealed class TrackerEngine : IDisposable
     /// may well be the next morning).</summary>
     private void Stop(DateTime endTime)
     {
-        if (!IsTracking || _awaitingFinalAnswer) return;
+        if (!IsTracking || AwaitingFinalAnswer) return;
         var now = DateTime.Now;
         CancelAutoStop();
         if (PauseUntil != null) EndManualPause(endTime);
         _prompt.Close();
         _activePromptEnd = null;
+        SettlePendingReturn();
 
         var periodStart = _lastCovered;
         var periodEnd = endTime;
@@ -188,7 +204,7 @@ public sealed class TrackerEngine : IDisposable
             AwaitingReturnSince = null;
             var pauseStart = Max(gapStart, periodStart);
             if (endTime > pauseStart)
-                Entries.Add(new Entry(pauseStart, endTime, "Pauza (odsutnost)", EntryKind.Pause));
+                Record(pauseStart, endTime, "Pauza (odsutnost)", EntryKind.Pause);
             periodEnd = pauseStart;
             _lastCovered = Max(_lastCovered, endTime);
         }
@@ -199,7 +215,7 @@ public sealed class TrackerEngine : IDisposable
             // A prompt that stayed up overnight (laptop closed) gets answered tomorrow, while its
             // period was cut at the end of its own day — say so, or the entry looks wrong.
             bool overnight = Store.DayKey(endTime) != Store.DayKey(now);
-            _awaitingFinalAnswer = true;
+            AwaitingFinalAnswer = true;
             Show(new PromptRequest
             {
                 Start = periodStart,
@@ -211,6 +227,7 @@ public sealed class TrackerEngine : IDisposable
                     : "Kraj dana — što si radio u zadnjem periodu?",
                 AllowSnooze = false
             });
+            RaiseChanged();
         }
         else
         {
@@ -221,25 +238,30 @@ public sealed class TrackerEngine : IDisposable
     private void FinalizeStop()
     {
         IsTracking = false;
-        _awaitingFinalAnswer = false;
+        AwaitingFinalAnswer = false;
         _carriedSpans.Clear();
+        _pendingReturn = null;
         CancelAutoStop();
         NextPromptAt = null;
         _sessionStart = null;
         AwaitingReturnSince = null;
         PersistDay();
         RaiseChanged();
-        OpenSummary();
+        OpenSummary(DateTime.TryParseExact(CurrentDayKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+            DateTimeStyles.None, out var sessionDay) ? sessionDay : DateTime.Now);
     }
 
     public void Pause(int? minutes)
     {
-        if (!IsTracking || PauseUntil != null) return;
+        // While the final answer is pending the day is already closed — a pause would close the
+        // final prompt and leave AwaitingFinalAnswer on for good (tracking gets stuck).
+        if (!IsTracking || AwaitingFinalAnswer || PauseUntil != null) return;
         var now = DateTime.Now;
         _pausedSince = now;
         PauseUntil = minutes is int m ? now.AddMinutes(m) : DateTime.MaxValue;
         _prompt.Close();
         _activePromptEnd = null;
+        SettlePendingReturn();
         bool hasPeriod = (now - _lastCovered).TotalSeconds > 60;
         if (hasPeriod || _carriedSpans.Count > 0)
         {
@@ -285,9 +307,17 @@ public sealed class TrackerEngine : IDisposable
         });
     }
 
+    /// <summary>Brings the final prompt back to the front — "Otvori zadnji zapis" in the popover
+    /// while the day waits for its last answer.</summary>
+    public void FocusFinalPrompt()
+    {
+        if (!AwaitingFinalAnswer || !_prompt.IsVisible) return;
+        _prompt.Focus();
+    }
+
     /// <summary>Whether "Zapiši sada" currently makes sense (the popover hides it otherwise).</summary>
     public bool CanPromptNow
-        => IsTracking && !_awaitingFinalAnswer && PauseUntil == null && AwaitingReturnSince == null;
+        => IsTracking && !AwaitingFinalAnswer && PauseUntil == null && AwaitingReturnSince == null;
 
     public void Snooze(int minutes)
     {
@@ -373,6 +403,7 @@ public sealed class TrackerEngine : IDisposable
         {
             Apply(Entries);
             Store.SaveDay(CurrentDayKey, Entries);
+            AbsorbManualEntries();
         }
         else
         {
@@ -380,7 +411,10 @@ public sealed class TrackerEngine : IDisposable
             Apply(day);
             Store.SaveDay(dayKey, day);
         }
-        if (kind == EntryKind.Work && clean != row.Text) PushHistory(clean);
+        // History (the next prompt's prefill) follows the current day only — fixing
+        // yesterday's entry mustn't become the suggestion for what you're doing now.
+        if (kind == EntryKind.Work && clean != row.Text && dayKey == CurrentDayKey)
+            PushHistory(clean);
         RaiseChanged();
     }
 
@@ -402,6 +436,7 @@ public sealed class TrackerEngine : IDisposable
         {
             Apply(Entries);
             Store.SaveDay(CurrentDayKey, Entries);
+            AbsorbManualEntries();
         }
         else
         {
@@ -409,7 +444,7 @@ public sealed class TrackerEngine : IDisposable
             Apply(day);
             Store.SaveDay(dayKey, day);
         }
-        if (kind == EntryKind.Work) PushHistory(clean);
+        if (kind == EntryKind.Work && dayKey == CurrentDayKey) PushHistory(clean);
         RaiseChanged();
     }
 
@@ -466,7 +501,8 @@ public sealed class TrackerEngine : IDisposable
     {
         if (Store.DayKey(now) == CurrentDayKey) return null;
         // A session that legitimately crosses into the new day (start at 20:00 with auto-stop at
-        // 16:00 → the stop is scheduled for tomorrow) isn't interrupted.
+        // 16:00 → the stop is scheduled for tomorrow) isn't interrupted — while the computer is
+        // running; sleeping across midnight is caught in Tick (SleepGap).
         if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt && stopAt > now) return null;
         if (!DateTime.TryParseExact(CurrentDayKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
                 DateTimeStyles.None, out var sessionDay))
@@ -569,6 +605,16 @@ public sealed class TrackerEngine : IDisposable
         PresentStartReminder(now);
     }
 
+    /// <summary>An open reminder with a backfill gets a fresh offer of starts when a new interval
+    /// begins — see <see cref="StartupReminderController.UpdateStartOptions"/>. A window left up
+    /// overnight carries yesterday's title, so it's left alone (CheckWorkdayStart replaces it).</summary>
+    private void RefreshStartReminderOptions(DateTime now)
+    {
+        if (!_startupReminder.IsVisible || _startupReminder.ShownBackfillFrom == null) return;
+        if (_startupReminder.ShownAt is not DateTime shownAt || Store.DayKey(shownAt) != Store.DayKey(now)) return;
+        _startupReminder.UpdateStartOptions(BackfillOptions(now));
+    }
+
     /// <summary>Shared pop-up for both reminders (app launch and start of the work day).</summary>
     private void PresentStartReminder(DateTime now)
     {
@@ -581,7 +627,17 @@ public sealed class TrackerEngine : IDisposable
             // If the window stayed up overnight the chosen time is yesterday's — Start() drops it
             // and starts from now, so the day never begins yesterday.
             onStart: from => Start(from),
-            onDismiss: () => { });
+            onDismiss: StartReminderDismissed);
+    }
+
+    /// <summary>"Kasnije" — if the work day has already started, today's reminder is done with.
+    /// Otherwise a reminder opened before the work day started (launch at 7:50, work day at 8:00)
+    /// and dismissed after it would pop up again right away, with a sound.</summary>
+    private void StartReminderDismissed()
+    {
+        var now = DateTime.Now;
+        if (WorkdayStart(now) is DateTime start && now >= start)
+            _workdayReminderDayKey = Store.DayKey(now);
     }
 
     // MARK: - New version
@@ -718,11 +774,28 @@ public sealed class TrackerEngine : IDisposable
     private void Tick()
     {
         var now = DateTime.Now;
+        var previousTick = _lastTickAt;
+        _lastTickAt = now;
         CheckWorkdayStart(now);
+        RefreshStartReminderOptions(now);
         CheckForUpdateIfDue(now);
         ShowPendingUpdatePopup();
+        RollOverIdleDay(now);
         // The day is closed and the final prompt is pending — nothing more gets scheduled.
-        if (!IsTracking || _awaitingFinalAnswer) return;
+        if (!IsTracking || AwaitingFinalAnswer) return;
+
+        // A session started after the stop time (the stop is scheduled only for one of the
+        // following days) may cross midnight only while the computer is running. If it slept
+        // across the day boundary (lid closed in the evening), the day closes at the moment it
+        // fell asleep — otherwise the whole night (and the morning until tomorrow's stop) would
+        // be work in yesterday's day.
+        if (previousTick is DateTime lastTick && now - lastTick >= SleepGap
+            && Store.DayKey(now) != CurrentDayKey
+            && AutoStopAt is DateTime scheduledStop && Store.DayKey(scheduledStop) != CurrentDayKey)
+        {
+            Stop(Max(lastTick, _lastCovered));
+            return;
+        }
 
         // Before anything else — the auto-stop applies while paused or awaiting a return too.
         if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt)
@@ -762,24 +835,45 @@ public sealed class TrackerEngine : IDisposable
             // An unanswered prompt outlived the interval boundary — instead of opening a
             // second prompt, extend the existing one's period (accumulated time).
             if (NextPromptAt is DateTime boundary && now >= boundary && _activePromptEnd != null)
-                ExtendActivePrompt(boundary);
+            {
+                if (AbsenceStart(now) is DateTime since)
+                {
+                    // The user walked away from the open prompt (e.g. lunch) — the absence must
+                    // not be added to the period as work. The prompt closes and we wait for the
+                    // return, as if the boundary had found a locked screen: on return a prompt
+                    // up to the start of the absence pops up, and the absence goes in as a pause.
+                    _prompt.Close();
+                    _activePromptEnd = null;
+                    AwaitingReturnSince = Max(since, _lastCovered);
+                    RaiseChanged();
+                }
+                else
+                {
+                    ExtendActivePrompt(boundary);
+                }
+            }
             return;
         }
         if (NextPromptAt is DateTime next && now >= next)
             AttemptPrompt(now);
     }
 
+    /// <summary>Start of the absence if the user isn't at the computer right now (locked screen or
+    /// idle above the threshold, per settings), otherwise null.</summary>
+    private DateTime? AbsenceStart(DateTime now)
+    {
+        if (Settings.LockPauseEnabled && _session.IsLocked) return _session.LockedAt ?? now;
+        double idle = IdleMonitor.IdleSeconds();
+        if (Settings.IdleDetectionEnabled && idle >= Settings.IdleThresholdMinutes * 60.0)
+            return now.AddSeconds(-idle);
+        return null;
+    }
+
     private void AttemptPrompt(DateTime now)
     {
-        double idle = IdleMonitor.IdleSeconds();
-        if (Settings.LockPauseEnabled && _session.IsLocked)
+        if (AbsenceStart(now) is DateTime since)
         {
-            AwaitingReturnSince = Max(_session.LockedAt ?? now, _lastCovered);
-            RaiseChanged();
-        }
-        else if (Settings.IdleDetectionEnabled && idle >= Settings.IdleThresholdMinutes * 60.0)
-        {
-            AwaitingReturnSince = Max(now.AddSeconds(-idle), _lastCovered);
+            AwaitingReturnSince = Max(since, _lastCovered);
             RaiseChanged();
         }
         else
@@ -788,6 +882,13 @@ public sealed class TrackerEngine : IDisposable
             // answering — entries stay exactly on the 5-min grid and late answers spill
             // into the next period.
             var end = NextPromptAt ?? now;
+            // A manual entry covered (almost) the whole period — nothing to ask; the rest goes
+            // into the next boundary's period.
+            if ((end - _lastCovered).TotalSeconds < 60 && _carriedSpans.Count == 0)
+            {
+                NextPromptAt = AlignedNextPrompt(end);
+                return;
+            }
             _activePromptEnd = end;
             Show(new PromptRequest
             {
@@ -816,12 +917,21 @@ public sealed class TrackerEngine : IDisposable
 
         if ((gapStart - _lastCovered).TotalSeconds > 60)
         {
+            // The absence is recorded right away (a pause up to the return), and the prompt asks
+            // only about the work before it — the time from return to answer is already a new period.
+            if (now > gapStart)
+            {
+                Record(gapStart, now, "Pauza (odsutnost)", EntryKind.Pause);
+                PersistDay();
+            }
+            var pending = new PromptRequest.PendingPause(gapStart, Max(now, gapStart));
+            _pendingReturn = pending;
             Show(new PromptRequest
             {
                 Start = _lastCovered,
                 End = gapStart,
-                PauseAfter = new PromptRequest.PendingPause(gapStart, "Pauza (odsutnost)"),
-                Note = $"Bio si odsutan ~{gapMinutes} min — to razdoblje bit će označeno kao pauza.",
+                PauseAfter = pending,
+                Note = $"Bio si odsutan ~{gapMinutes} min — to razdoblje je označeno kao pauza.",
                 AllowSnooze = false
             });
         }
@@ -829,7 +939,7 @@ public sealed class TrackerEngine : IDisposable
         {
             if (now > gapStart)
             {
-                Entries.Add(new Entry(Max(gapStart, _lastCovered), now, "Pauza (odsutnost)", EntryKind.Pause));
+                Record(Max(gapStart, _lastCovered), now, "Pauza (odsutnost)", EntryKind.Pause);
                 PersistDay();
             }
             _lastCovered = now;
@@ -846,7 +956,7 @@ public sealed class TrackerEngine : IDisposable
             // comes next (the pause sits between) — it gets carried forward as a separate row.
             Carry(new PromptSpan(_lastCovered, since));
             if (now > since)
-                Entries.Add(new Entry(Max(since, _lastCovered), now, "Pauza", EntryKind.Pause));
+                Record(Max(since, _lastCovered), now, "Pauza", EntryKind.Pause);
         }
         _pausedSince = null;
         PauseUntil = null;
@@ -886,19 +996,71 @@ public sealed class TrackerEngine : IDisposable
             onSnooze: () => Snooze(5));
     }
 
-    /// <summary>Adds a skipped period to the list carried into the next prompt; adjacent ones merge.</summary>
+    /// <summary>Adds a skipped period to the list carried into the next prompt; adjacent ones merge.
+    /// The part filled in the meantime by a manual entry isn't asked about again.</summary>
     private void Carry(PromptSpan span)
     {
-        if (span.Duration <= 60) return;
-        if (_carriedSpans.Count > 0 && Math.Abs((span.Start - _carriedSpans[^1].End).TotalSeconds) <= 1)
+        foreach (var part in Summarize.Uncovered(Entries, span.Start, span.End))
         {
-            var last = _carriedSpans[^1];
-            _carriedSpans[^1] = new PromptSpan(last.Start, Max(last.End, span.End));
+            if ((part.End - part.Start).TotalSeconds <= 60) continue;
+            if (_carriedSpans.Count > 0 && Math.Abs((part.Start - _carriedSpans[^1].End).TotalSeconds) <= 1)
+            {
+                var last = _carriedSpans[^1];
+                _carriedSpans[^1] = new PromptSpan(last.Start, Max(last.End, part.End));
+            }
+            else
+            {
+                _carriedSpans.Add(new PromptSpan(part.Start, part.End));
+            }
         }
-        else
+    }
+
+    /// <summary>An automatic entry (prompt answer, pause, absence) — written only into time not yet
+    /// covered by an entry, so a manual entry from the day view takes precedence.</summary>
+    private void Record(DateTime start, DateTime end, string text, EntryKind kind)
+    {
+        foreach (var part in Summarize.Uncovered(Entries, start, end))
+            if ((part.End - part.Start).TotalSeconds > 5)
+                Entries.Add(new Entry(part.Start, part.End, text, kind));
+    }
+
+    /// <summary>The return prompt was closed without an answer (Stop, Pause, auto-stop). The pause
+    /// for the absence is already recorded; the work before it is carried as a separate row and
+    /// the period starts at the return — otherwise the absence would end up in the next prompt
+    /// as work.</summary>
+    private void SettlePendingReturn()
+    {
+        if (_pendingReturn is not PromptRequest.PendingPause pending) return;
+        _pendingReturn = null;
+        Carry(new PromptSpan(_lastCovered, pending.Start));
+        _lastCovered = Max(_lastCovered, pending.End);
+    }
+
+    /// <summary>After a manual entry/correction in today's day: time that is now covered isn't asked
+    /// about again. <c>_lastCovered</c> skips over entries that continue from it (at most up to now),
+    /// and carried skipped periods are trimmed by the filled part.</summary>
+    private void AbsorbManualEntries()
+    {
+        if (!IsTracking) return;
+        var now = DateTime.Now;
+        bool advanced = true;
+        while (advanced)
         {
-            _carriedSpans.Add(span);
+            advanced = false;
+            foreach (var e in Entries)
+            {
+                if ((e.Start - _lastCovered).TotalSeconds > 1) continue;
+                var end = Min(e.End, now);
+                if (end > _lastCovered)
+                {
+                    _lastCovered = end;
+                    advanced = true;
+                }
+            }
         }
+        var spans = _carriedSpans.ToList();
+        _carriedSpans.Clear();
+        foreach (var span in spans) Carry(span);
     }
 
     /// <summary>A segment with no text was <b>skipped</b> — it isn't recorded. If it sits at the end
@@ -937,7 +1099,7 @@ public sealed class TrackerEngine : IDisposable
             }
             else
             {
-                Entries.Add(new Entry(seg.Start, seg.End, texts[i], EntryKind.Work));
+                Record(seg.Start, seg.End, texts[i], EntryKind.Work);
                 // Chronological order → last segment ends up as history[0] (prefill for the next prompt).
                 PushHistory(texts[i]);
             }
@@ -946,13 +1108,14 @@ public sealed class TrackerEngine : IDisposable
         // history — which makes it the next prompt's prefill.
         if (result.NextUp?.Trim() is string nextUp && nextUp.Length > 0) PushHistory(nextUp);
 
-        if (request.PauseAfter is PromptRequest.PendingPause pending && now > pending.Start)
+        if (request.PauseAfter is PromptRequest.PendingPause pending)
         {
-            // The absence is recorded as a pause; skipped work before it isn't adjacent to what
-            // follows, so it gets carried forward separately.
+            // The pause for the absence was recorded on return; skipped work before it isn't
+            // adjacent to what follows, so it gets carried forward separately. The next period
+            // starts at the return.
+            _pendingReturn = null;
             Carry(new PromptSpan(coveredEnd, Min(pending.Start, effectiveEnd ?? pending.Start)));
-            Entries.Add(new Entry(pending.Start, now, pending.Reason, EntryKind.Pause));
-            _lastCovered = Max(_lastCovered, now);
+            _lastCovered = Max(_lastCovered, pending.End);
         }
         else
         {
@@ -981,6 +1144,18 @@ public sealed class TrackerEngine : IDisposable
         if (History.Count > Settings.HistoryLimit)
             History = History.Take(Settings.HistoryLimit).ToList();
         Store.SaveHistory(History);
+    }
+
+    /// <summary>Without tracking "today" follows the clock — otherwise after midnight the popover
+    /// would show yesterday's entries until Start. A session (and a final prompt still waiting for
+    /// an answer) keeps its day to the end.</summary>
+    private void RollOverIdleDay(DateTime now)
+    {
+        string today = Store.DayKey(now);
+        if (IsTracking || today == CurrentDayKey) return;
+        CurrentDayKey = today;
+        Entries = Store.LoadDay(today);
+        RaiseChanged();
     }
 
     private void PersistDay()
@@ -1073,6 +1248,7 @@ public sealed class TrackerEngine : IDisposable
         get
         {
             if (!IsTracking) return "Nije pokrenuto";
+            if (AwaitingFinalAnswer) return "Kraj dana — čeka zadnji zapis";
             if (PauseUntil is DateTime until)
                 return until == DateTime.MaxValue ? "Pauzirano do nastavka" : $"Pauzirano do {Fmt.Hhmm(until)}";
             if (AwaitingReturnSince is DateTime since)
@@ -1097,9 +1273,18 @@ public sealed class TrackerEngine : IDisposable
     private void OnSessionChanged()
     {
         if (_marshal.IsHandleCreated && _marshal.InvokeRequired)
-            _marshal.BeginInvoke(new Action(() => Changed?.Invoke()));
+            _marshal.BeginInvoke(new Action(ApplySessionChange));
         else
-            Changed?.Invoke();
+            ApplySessionChange();
+    }
+
+    private void ApplySessionChange()
+    {
+        // Sleep isn't work: a lock seen only after a tick gap dates from the last tick.
+        if (_session.IsLocked && _session.LockedAt is DateTime lockedAt
+            && _lastTickAt is DateTime lastTick && lockedAt - lastTick > LockTickGap)
+            _session.BackdateLock(lastTick);
+        Changed?.Invoke();
     }
 
     private void RaiseChanged() => Changed?.Invoke();

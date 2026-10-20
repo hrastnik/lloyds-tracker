@@ -26,8 +26,14 @@ struct PromptView: View {
     private var periodStart: Date { model.start }
     /// Kraj perioda se uživo produžuje dok prompt čeka odgovor (skupno vrijeme).
     private var periodEnd: Date { max(model.end, model.start) }
-    /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti.
-    private var boundaries: [Date] { Self.gridBoundaries(from: periodStart, to: periodEnd) }
+    /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti. Kad produženje
+    /// prorijedi mrežu (5 → 10 min), već postavljeni rezovi ostaju — inače bi se njihovi
+    /// blokovi spojili, a tekst upisan u njih nestao (ni prikazan ni spremljen).
+    private var boundaries: [Date] {
+        let grid = Self.gridBoundaries(from: periodStart, to: periodEnd)
+        let kept = splitPoints.filter { $0 > periodStart && $0 < periodEnd && !grid.contains($0) }
+        return (grid + kept).sorted()
+    }
 
     @State private var splitPoints: Set<Date> = []
     /// Tekst po segmentu, ključ = početak segmenta. Preživljava spajanje/razdvajanje.

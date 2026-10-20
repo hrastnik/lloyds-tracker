@@ -85,7 +85,7 @@ impl AutoStopWarning {
             let win = window.clone();
             let cb = on_extend.clone();
             let button = ui::button(&label, &["pill"], move || {
-                win.close();
+                win.destroy();
                 cb(minutes);
             });
             button.set_hexpand(true);
@@ -103,7 +103,7 @@ impl AutoStopWarning {
                 &format!("Zaustavi sad — bilježi do {}", Fmt::hhmm(stop_at)),
                 &["outline"],
                 move || {
-                    win.close();
+                    win.destroy();
                     cb();
                 },
             )
@@ -123,7 +123,7 @@ impl AutoStopWarning {
             let cb = on_dismiss.clone();
             key.connect_key_pressed(move |_, keyval, _, _| {
                 if keyval == Key::Escape {
-                    win.close();
+                    win.destroy();
                     cb();
                     return Propagation::Stop;
                 }
@@ -131,6 +131,16 @@ impl AutoStopWarning {
             });
         }
         window.add_controller(key);
+
+        // Alt+F4 / zatvaranje iz window managera = Esc — inače engine misli da je prozor
+        // još otvoren. Programska zatvaranja idu preko `destroy()`, koji ovaj signal ne šalje.
+        {
+            let cb = on_dismiss.clone();
+            window.connect_close_request(move |_| {
+                cb();
+                Propagation::Proceed
+            });
+        }
 
         window.set_child(Some(&content));
         ui::PanelFade::appear(&window);
@@ -157,6 +167,6 @@ impl AutoStopWarning {
     }
 
     pub fn close(&self) {
-        self.window.close();
+        self.window.destroy();
     }
 }

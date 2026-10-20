@@ -29,10 +29,24 @@ internal sealed class StartupReminderController
             onStart: from => { Close(); onStart(from); },
             onDismiss: () => { Close(); onDismiss(); });
         _form = form;
-        form.FormClosed += (_, _) => { if (_form == form) Forget(); };
+        // Closed by the system (Alt+F4) rather than by us — same as "Kasnije". Close() forgets
+        // the form first, so this doesn't fire twice.
+        form.FormClosed += (_, _) => { if (_form == form) { Forget(); onDismiss(); } };
         form.Appear();
         ShownAt = DateTime.Now;
         ShownBackfillFrom = startOptions.Count > 0 ? startOptions[0] : null;
+    }
+
+    /// <summary>The offer of starts holds for the interval the window was shown in — if it stays
+    /// up for hours, the latest start lags behind (shown at 8:40, at 11:00 it still offers 8:30 at
+    /// most). The engine sends it a fresh offer on each new interval; the chosen time stays chosen
+    /// if it's still on offer. Only when the window already offers a backfill and the new offer
+    /// isn't empty — the backfill appearing and a window left overnight are handled by the engine
+    /// replacing the window.</summary>
+    public void UpdateStartOptions(IReadOnlyList<DateTime> options)
+    {
+        if (_form is not { IsDisposed: false } f || ShownBackfillFrom == null || options.Count == 0) return;
+        if (f.UpdateStartOptions(options)) ShownBackfillFrom = options[0];
     }
 
     public void Close()
@@ -56,10 +70,14 @@ internal sealed class StartupReminderForm : Form
     private readonly Action _onDismiss;
     /// <summary>Not empty → the morning backfill is offered too: the arrows move the start from the
     /// start of the work day up to the start of the current interval, in interval steps.</summary>
-    private readonly IReadOnlyList<DateTime> _startOptions;
+    private IReadOnlyList<DateTime> _startOptions;
     /// <summary>Index into <see cref="_startOptions"/>. The default is the start of the work day —
     /// that's the reason the pop-up appeared at the set time in the first place.</summary>
     private int _selection;
+    private Label _subtitle = null!;
+    private FlatButton _start = null!;
+    /// <summary>Only with a backfill offer.</summary>
+    private FlatButton? _stepBack, _stepForward;
 
     public StartupReminderForm(string dayTitle, IReadOnlyList<DateTime> startOptions, Action<DateTime?> onStart, Action onDismiss)
     {
@@ -90,7 +108,8 @@ internal sealed class StartupReminderForm : Form
         lloyds.Location = new Point(square.Right + Brand.S(8), (Brand.S(18) - lloyds.Height) / 2);
         var tracker = new TrackedLabel { Text = "TRACKER", Font = Brand.Ui(10.5f), ForeColor = Palette.Gray, Tracking = 2f, BackColor = Palette.Black };
         tracker.Location = new Point(lloyds.Right + Brand.S(6), (Brand.S(18) - tracker.Height) / 2);
-        var day = new Label { AutoSize = true, Text = dayTitle, Font = Brand.Ui(8f), ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black };
+        var day = new Label { AutoSize = true, Text = dayTitle, Font = Brand.Ui(8f), ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black };
+        Brand.FitDayTitle(day, innerW - tracker.Right - Brand.S(12));
         day.Location = new Point(innerW - day.PreferredWidth, (Brand.S(18) - day.Height) / 2);
         day.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         logoRow.Controls.AddRange(new Control[] { square, lloyds, tracker, day });
@@ -101,12 +120,10 @@ internal sealed class StartupReminderForm : Form
         Controls.Add(title);
         y += title.Height + Brand.S(6);
 
-        string subtitleText = _startOptions.Count > 0
-            ? $"Radni dan počinje u {Fmt.Hhmm(_startOptions[0])}, a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
-            : "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.";
-        var subtitle = new Label { AutoSize = false, Text = subtitleText, Font = Brand.Ui(9f), ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(pad, y), Width = innerW };
+        var subtitle = new Label { AutoSize = false, Text = SubtitleText(), Font = Brand.Ui(9f), ForeColor = Palette.Gray, BackColor = Palette.Black, Location = new Point(pad, y), Width = innerW };
         subtitle.Height = TextRenderer.MeasureText(subtitle.Text, subtitle.Font, new Size(innerW, int.MaxValue), TextFormatFlags.WordBreak).Height + Brand.S(2);
         Controls.Add(subtitle);
+        _subtitle = subtitle;
         y += subtitle.Height + Brand.S(16);
 
         // The time sits in the Start button itself and ‹ › move it by one interval — one click for
@@ -123,27 +140,23 @@ internal sealed class StartupReminderForm : Form
             right = forward.Left - Brand.S(2);
         }
 
-        var start = new FlatButton { Text = StartTitle(), Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(right - left, h), Location = new Point(left, y) };
+        var start = new FlatButton { Focusable = false, Text = StartTitle(), Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(right - left, h), Location = new Point(left, y) };
         start.Click += (_, _) => _onStart(SelectedStart());
         Controls.Add(start);
+        _start = start;
 
         if (back is FlatButton stepBack && forward is FlatButton stepForward)
         {
-            void ShowSelection()
-            {
-                start.Text = StartTitle();
-                start.Invalidate();
-                SetStepEnabled(stepBack, _selection > 0);
-                SetStepEnabled(stepForward, _selection < _startOptions.Count - 1);
-            }
             stepBack.Click += (_, _) => { if (_selection > 0) { _selection--; ShowSelection(); } };
             stepForward.Click += (_, _) => { if (_selection < _startOptions.Count - 1) { _selection++; ShowSelection(); } };
             Controls.Add(stepBack);
             Controls.Add(stepForward);
+            _stepBack = stepBack;
+            _stepForward = stepForward;
             ShowSelection();
         }
 
-        var later = new FlatButton { Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
+        var later = new FlatButton { Focusable = false, Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
         later.Click += (_, _) => _onDismiss();
         Controls.Add(later);
         y += Brand.S(40);
@@ -153,8 +166,44 @@ internal sealed class StartupReminderForm : Form
 
         var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Top + Brand.S(24));
-        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
+        Region = Brand.RoundedRegion(Size, Brand.Sf(16));
     }
+
+    private void ShowSelection()
+    {
+        _start.Text = StartTitle();
+        _start.Invalidate();
+        if (_stepBack is FlatButton back && _stepForward is FlatButton forward)
+        {
+            SetStepEnabled(back, _selection > 0);
+            SetStepEnabled(forward, _selection < _startOptions.Count - 1);
+        }
+    }
+
+    /// <summary>See <see cref="StartupReminderController.UpdateStartOptions"/>. Only swaps the
+    /// offer of a window that already has the arrows; returns whether anything changed.</summary>
+    public bool UpdateStartOptions(IReadOnlyList<DateTime> options)
+    {
+        if (_stepBack == null || options.Count == 0 || options.SequenceEqual(_startOptions)) return false;
+        int at = SelectedStart() is DateTime selected ? IndexOf(options, selected) : -1;
+        _selection = at >= 0 ? at : Math.Min(_selection, options.Count - 1);
+        _startOptions = options;
+        // The work day start only changes with the settings — the subtitle keeps its height.
+        _subtitle.Text = SubtitleText();
+        ShowSelection();
+        return true;
+    }
+
+    private static int IndexOf(IReadOnlyList<DateTime> options, DateTime value)
+    {
+        for (int i = 0; i < options.Count; i++)
+            if (options[i] == value) return i;
+        return -1;
+    }
+
+    private string SubtitleText() => _startOptions.Count > 0
+        ? $"Radni dan počinje u {Fmt.Hhmm(_startOptions[0])}, a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
+        : "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.";
 
     private DateTime? SelectedStart()
         => _selection >= 0 && _selection < _startOptions.Count ? _startOptions[_selection] : null;
@@ -164,7 +213,7 @@ internal sealed class StartupReminderForm : Form
 
     /// <summary>Arrow next to the Start button — moves the start by one interval.</summary>
     private static FlatButton StepButton(string glyph, Point location, int height)
-        => new() { Text = glyph, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(12f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(Brand.S(30), height), Location = location };
+        => new() { Focusable = false, Text = glyph, Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(12f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(Brand.S(30), height), Location = location };
 
     private static void SetStepEnabled(FlatButton button, bool enabled)
     {

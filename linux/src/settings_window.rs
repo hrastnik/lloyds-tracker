@@ -281,23 +281,37 @@ impl SettingsWindow {
 
     // MARK: - Promjene
 
+    /// Closurei drže prozor samo slabo (`Weak`) — kontrole su u prozoru koji `SettingsWindow`
+    /// drži, a GTK ih pri zatvaranju ne otpušta, pa bi jaki `Rc` bio ciklus (kao u pregledu).
     fn connect_all(self: &Rc<Self>) {
         macro_rules! on_switch {
             ($($w:ident),*) => {$({
-                let me = self.clone();
-                self.$w.connect_active_notify(move |_| me.apply());
+                let me = Rc::downgrade(self);
+                self.$w.connect_active_notify(move |_| {
+                    if let Some(me) = me.upgrade() {
+                        me.apply();
+                    }
+                });
             })*};
         }
         macro_rules! on_dropdown {
             ($($w:ident),*) => {$({
-                let me = self.clone();
-                self.$w.connect_selected_notify(move |_| me.apply());
+                let me = Rc::downgrade(self);
+                self.$w.connect_selected_notify(move |_| {
+                    if let Some(me) = me.upgrade() {
+                        me.apply();
+                    }
+                });
             })*};
         }
         macro_rules! on_spin {
             ($($w:ident),*) => {$({
-                let me = self.clone();
-                self.$w.connect_value_changed(move |_| me.apply());
+                let me = Rc::downgrade(self);
+                self.$w.connect_value_changed(move |_| {
+                    if let Some(me) = me.upgrade() {
+                        me.apply();
+                    }
+                });
             })*};
         }
 
@@ -317,9 +331,12 @@ impl SettingsWindow {
         on_spin!(workday_hour, workday_minute, auto_stop_hour, auto_stop_minute);
 
         // Ručna provjera — status se osvježi kad engine javi ishod (`refresh_update_status`).
-        let me = self.clone();
-        self.update_check_now
-            .connect_clicked(move |_| me.app.clone().mutate(|engine| engine.check_for_update()));
+        let me = Rc::downgrade(self);
+        self.update_check_now.connect_clicked(move |_| {
+            if let Some(me) = me.upgrade() {
+                me.app.clone().mutate(|engine| engine.check_for_update());
+            }
+        });
     }
 
     /// Skuplja stanje svih kontrola i predaje ga engineu (koji ga sprema i primijeni).
@@ -385,9 +402,10 @@ impl SettingsWindow {
         self.backfill_caption.set_text(&format!(
             "Određuje što pop-up nudi kad ga otvoriš nakon {clock}. Uključeno: gumb „Start od \
              {clock}” upisuje dan od {clock}, pa te prvi prompt pita što si radio od {clock} do \
-             sada — npr. probudiš laptop u {example} i prompt te pita za {clock}–{example}. Uz \
-             njega ostaje i „Počni tek od sada”. Isključeno: pop-up ima samo „Start” i tracking \
-             teče od trenutka klika — jutro ostaje neupisano."
+             sada — npr. probudiš laptop u {example} i prompt te pita za {clock}–{example}. \
+             Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od \
+             sada. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — \
+             jutro ostaje neupisano."
         ));
 
         let status = self.app.engine.borrow().launch_at_login_status.clone();

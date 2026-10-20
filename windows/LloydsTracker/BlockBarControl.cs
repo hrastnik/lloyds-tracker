@@ -38,6 +38,19 @@ internal static class PromptGeometry
         return empty;
     }
 
+    /// <summary><see cref="GridBoundaries"/> plus split points already set inside the period.
+    /// When an extension thins the grid (5 → 10 min) the existing splits stay — otherwise their
+    /// blocks would merge and the text typed into them would vanish (neither shown nor
+    /// saved).</summary>
+    public static List<DateTime> Boundaries(DateTime start, DateTime end, IEnumerable<DateTime> splitPoints)
+    {
+        var points = GridBoundaries(start, end);
+        var kept = splitPoints.Where(p => p > start && p < end && !points.Contains(p)).ToList();
+        points.AddRange(kept);
+        points.Sort();
+        return points;
+    }
+
     public static List<(DateTime Start, DateTime End)> Segments(
         DateTime periodStart, DateTime periodEnd, IReadOnlyList<DateTime> boundaries, ISet<DateTime> splitPoints)
     {
@@ -83,13 +96,16 @@ internal sealed class BlockBarControl : Control
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw, true);
+        // Mouse-only (scissors/segments) — not a Tab stop between the prompt's fields.
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         BackColor = Palette.Black;
         Height = TrackHeight + Gap + LabelsHeight;
         Cursor = Cursors.Hand;
     }
 
-    private double Total => Math.Max((PeriodEnd - PeriodStart).TotalSeconds, 1);
-    private float XOf(DateTime d) => (float)((d - PeriodStart).TotalSeconds / Total) * Width;
+    private double Total => Math.Max(Fmt.Seconds(PeriodStart, PeriodEnd), 1);
+    private float XOf(DateTime d) => (float)(Fmt.Seconds(PeriodStart, d) / Total) * Width;
 
     private List<(DateTime Start, DateTime End)> CurrentSegments()
         => PromptGeometry.Segments(PeriodStart, PeriodEnd, Boundaries, SplitPoints);
@@ -107,7 +123,7 @@ internal sealed class BlockBarControl : Control
         foreach (var seg in segments)
         {
             float x = XOf(seg.Start);
-            float sw = (float)((seg.End - seg.Start).TotalSeconds / Total) * Width;
+            float sw = (float)(Fmt.Seconds(seg.Start, seg.End) / Total) * Width;
             bool active = FocusedStart == seg.Start || segments.Count == 1;
             using var b = new SolidBrush(Palette.Yellow.OverBlack(active ? 0.85 : 0.4));
             var rect = new RectangleF(x + Brand.Sf(2), 0, Math.Max(Brand.Sf(6), sw - Brand.Sf(4)), TrackHeight);
@@ -141,8 +157,8 @@ internal sealed class BlockBarControl : Control
 
         // Time labels row.
         int labelsTop = TrackHeight + Gap;
-        using var labelFont = Brand.Mono(6.5f);
-        var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near };
+        var labelFont = Brand.Mono(6.5f); // shared — not disposed
+        using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Near };
         foreach (var b in Boundaries)
         {
             float x = XOf(b);
@@ -173,7 +189,7 @@ internal sealed class BlockBarControl : Control
             foreach (var seg in CurrentSegments())
             {
                 float x = XOf(seg.Start);
-                float sw = (float)((seg.End - seg.Start).TotalSeconds / Total) * Width;
+                float sw = (float)(Fmt.Seconds(seg.Start, seg.End) / Total) * Width;
                 if (e.X >= x && e.X <= x + sw)
                 {
                     SegmentFocused?.Invoke(seg.Start);

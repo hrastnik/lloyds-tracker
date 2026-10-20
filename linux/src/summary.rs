@@ -52,7 +52,7 @@ pub struct SummaryWindow {
 }
 
 impl SummaryWindow {
-    pub fn new(app: &Rc<App>) -> Rc<Self> {
+    pub fn new(app: &Rc<App>, day: DateTime<Local>) -> Rc<Self> {
         let window = Window::builder()
             .application(&app.gtk)
             .title("Pregled dana")
@@ -125,7 +125,7 @@ impl SummaryWindow {
         let summary = Rc::new(SummaryWindow {
             window: window.clone(),
             app: app.clone(),
-            date: RefCell::new(Local::now()),
+            date: RefCell::new(day),
             mode: RefCell::new(Mode::Grouped),
             title,
             work_badge,
@@ -141,13 +141,24 @@ impl SummaryWindow {
 
         // MARK: Podnožje
         let footer = ui::hbox(8);
+        // Closurei kontrola drže prozor samo slabo (`Weak`): `SummaryWindow` drži prozor, a
+        // GTK ga pri zatvaranju samo sakrije i ne otpušta djecu (`gtk_window_destroy` ne
+        // radi dispose) — jaki `Rc` bi bio ciklus i zatvoren pregled ne bi nikad nestao.
         let copy_button = {
-            let me = summary.clone();
-            ui::button("Kopiraj pregled", &["pill"], move || me.copy())
+            let me = Rc::downgrade(&summary);
+            ui::button("Kopiraj pregled", &["pill"], move || {
+                if let Some(me) = me.upgrade() {
+                    me.copy();
+                }
+            })
         };
         let export_button = {
-            let me = summary.clone();
-            ui::button("Export CSV…", &["pill"], move || me.export_csv())
+            let me = Rc::downgrade(&summary);
+            ui::button("Export CSV…", &["pill"], move || {
+                if let Some(me) = me.upgrade() {
+                    me.export_csv();
+                }
+            })
         };
         footer.append(&copy_button);
         footer.append(&export_button);
@@ -162,16 +173,25 @@ impl SummaryWindow {
 
         // MARK: Vezanje kontrola
         {
-            let me = summary.clone();
-            prev_button.connect_clicked(move |_| me.shift_day(-1));
+            let me = Rc::downgrade(&summary);
+            prev_button.connect_clicked(move |_| {
+                if let Some(me) = me.upgrade() {
+                    me.shift_day(-1);
+                }
+            });
         }
         {
-            let me = summary.clone();
-            next_button.connect_clicked(move |_| me.shift_day(1));
+            let me = Rc::downgrade(&summary);
+            next_button.connect_clicked(move |_| {
+                if let Some(me) = me.upgrade() {
+                    me.shift_day(1);
+                }
+            });
         }
         {
-            let me = summary.clone();
+            let me = Rc::downgrade(&summary);
             grouped_toggle.connect_toggled(move |b| {
+                let Some(me) = me.upgrade() else { return };
                 if b.is_active() {
                     me.close_editor(false);
                     *me.mode.borrow_mut() = Mode::Grouped;
@@ -180,8 +200,9 @@ impl SummaryWindow {
             });
         }
         {
-            let me = summary.clone();
+            let me = Rc::downgrade(&summary);
             chrono_toggle.connect_toggled(move |b| {
+                let Some(me) = me.upgrade() else { return };
                 if b.is_active() {
                     me.close_editor(false);
                     *me.mode.borrow_mut() = Mode::Chronological;
@@ -190,8 +211,9 @@ impl SummaryWindow {
             });
         }
         {
-            let me = summary.clone();
+            let me = Rc::downgrade(&summary);
             merge_check.connect_toggled(move |b| {
+                let Some(me) = me.upgrade() else { return };
                 let on = b.is_active();
                 if on == me.app.engine.borrow().settings.merge_adjacent_entries {
                     return;
@@ -227,9 +249,27 @@ impl SummaryWindow {
         }
     }
 
+    /// Skok na dan — uređivač pripada danu u kojem je otvoren.
+    pub fn show_day(self: &Rc<Self>, day: DateTime<Local>) {
+        if Store::day_key(day) != self.day_key() {
+            self.close_editor(false);
+        }
+        *self.date.borrow_mut() = day;
+        self.refresh();
+    }
+
     fn shift_day(self: &Rc<Self>, days: i64) {
         self.close_editor(false);
-        let new = *self.date.borrow() + Duration::days(days);
+        // Po kalendarskom datumu, u podne — ±24 h preko prelaska na ljetno/zimsko vrijeme
+        // (dan od 23/25 h) iz ponoći preskoči ili ponovi dan.
+        let current = *self.date.borrow();
+        let Some(new) = current
+            .date_naive()
+            .checked_add_signed(Duration::days(days))
+            .and_then(|date| Fmt::on_date(date, 12, 0))
+        else {
+            return;
+        };
         *self.date.borrow_mut() = new;
         self.refresh();
     }
@@ -368,14 +408,16 @@ impl SummaryWindow {
         button.set_child(Some(&row));
         button.add_css_class("row");
         button.set_tooltip_text(Some(&if chrono_row.is_merged() {
-            format!("Uredi unos ({} bloka)", chrono_row.ids.len())
+            format!("Uredi unos ({})", Fmt::blocks(chrono_row.ids.len()))
         } else {
             "Uredi unos".to_string()
         }));
-        let me = self.clone();
+        let me = Rc::downgrade(self);
         let edited = chrono_row.clone();
         button.connect_clicked(move |_| {
-            me.open_editor(EditTarget::Existing(edited.clone()), (edited.start, edited.end));
+            if let Some(me) = me.upgrade() {
+                me.open_editor(EditTarget::Existing(edited.clone()), (edited.start, edited.end));
+            }
         });
         button
     }
@@ -401,9 +443,11 @@ impl SummaryWindow {
             Fmt::hhmm(start),
             Fmt::hhmm(end)
         )));
-        let me = self.clone();
+        let me = Rc::downgrade(self);
         button.connect_clicked(move |_| {
-            me.open_editor(EditTarget::New { gap_start: Some(start) }, (start, end));
+            if let Some(me) = me.upgrade() {
+                me.open_editor(EditTarget::New { gap_start: Some(start) }, (start, end));
+            }
         });
         button
     }
@@ -412,12 +456,14 @@ impl SummaryWindow {
     fn add_button(self: &Rc<Self>) -> Button {
         let button = Button::with_label("+  Dodaj unos");
         button.add_css_class("add");
-        let me = self.clone();
+        let me = Rc::downgrade(self);
         button.connect_clicked(move |_| {
+            let Some(me) = me.upgrade() else { return };
             let range = Summarize::suggested_range(
                 &me.entries(),
                 *me.date.borrow(),
                 &me.app.engine.borrow().settings,
+                Local::now(),
             );
             // Iz praznog grupiranog prikaza se prelazi u kronološki (toggle zatvara uređivač
             // i osvježava, pa se uređivač otvara tek nakon toga).
@@ -438,11 +484,13 @@ impl SummaryWindow {
         let entries = self.entries();
         let history = self.app.engine.borrow().history.clone();
 
+        // Handleri žive u `EntryEditor`u, a njega drži `self.editor` — zato `Weak`.
         let save = {
-            let me = self.clone();
+            let me = Rc::downgrade(self);
             let key = key.clone();
             let target = target.clone();
             move |text: String, start, end, kind| {
+                let Some(me) = me.upgrade() else { return };
                 me.close_editor(false);
                 let key = key.clone();
                 match target.row().cloned() {
@@ -458,9 +506,10 @@ impl SummaryWindow {
             }
         };
         let delete = {
-            let me = self.clone();
+            let me = Rc::downgrade(self);
             let ids = target.row().map(|r| r.ids.clone()).unwrap_or_default();
             move || {
+                let Some(me) = me.upgrade() else { return };
                 me.close_editor(false);
                 let ids = ids.clone();
                 let key = key.clone();
@@ -469,8 +518,12 @@ impl SummaryWindow {
             }
         };
         let cancel = {
-            let me = self.clone();
-            move || me.close_editor(true)
+            let me = Rc::downgrade(self);
+            move || {
+                if let Some(me) = me.upgrade() {
+                    me.close_editor(true);
+                }
+            }
         };
 
         let editor = EntryEditor::new(
@@ -554,6 +607,7 @@ fn badge_box(caption: &str, value: &gtk4::Label) -> GtkBox {
 }
 
 pub fn open_data_folder() {
-    let uri = format!("file://{}", Store::directory().display());
+    // `gio::File` escapea putanju (razmak, dijakritici) — ručni `file://{}` bi bio neispravan URI.
+    let uri = gtk4::gio::File::for_path(Store::directory()).uri();
     let _ = gtk4::gio::AppInfo::launch_default_for_uri(&uri, None::<&gtk4::gio::AppLaunchContext>);
 }

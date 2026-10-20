@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, SecondsFormat, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -222,10 +222,12 @@ impl PromptSpan {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Odsutnost iza perioda povratnog prompta — pauza je već zapisana, `end` je trenutak
+/// povratka (od njega kreće sljedeći period, a ne od trenutka odgovora).
+#[derive(Debug, Clone, Copy)]
 pub struct PendingPause {
     pub start: DateTime<Local>,
-    pub reason: String,
+    pub end: DateTime<Local>,
 }
 
 #[derive(Debug, Clone)]
@@ -363,18 +365,59 @@ impl Summarize {
         *day = out;
     }
 
+    /// Dijelovi `start…end` koje ne pokriva nijedan unos. Automatski unosi (odgovor na
+    /// prompt, pauza, odsutnost) pune samo njih — ručno dodan ili ispravljen unos iz
+    /// pregleda dana ima prednost i ništa se ne broji dvaput.
+    pub fn uncovered(
+        entries: &[Entry],
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+    ) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+        let mut sorted: Vec<&Entry> = entries.iter().collect();
+        sorted.sort_by_key(|e| e.start);
+        let mut parts = Vec::new();
+        let mut cursor = start;
+        for e in sorted {
+            if e.end <= cursor || e.start >= end {
+                continue;
+            }
+            if e.start > cursor {
+                parts.push((cursor, e.start));
+            }
+            cursor = cursor.max(e.end);
+            if cursor >= end {
+                break;
+            }
+        }
+        if cursor < end {
+            parts.push((cursor, end));
+        }
+        parts
+    }
+
     /// Prijedlog raspona za "Dodaj unos": od kraja zadnjeg unosa (ili početka radnog dana
-    /// ako ih nema) u trajanju jednog intervala, unutar istog dana.
+    /// ako ih nema) u trajanju jednog intervala, unutar istog dana. Danas najkasnije do
+    /// sada — unos ne smije završiti u budućnosti (vidi `entry_edit.rs`).
     pub fn suggested_range(
         entries: &[Entry],
         day: DateTime<Local>,
         settings: &AppSettings,
+        now: DateTime<Local>,
     ) -> (DateTime<Local>, DateTime<Local>) {
-        let day_end = Fmt::at(day, 23, 59);
+        let day_start = Fmt::at(day, 0, 0);
+        let mut day_end = Fmt::at(day, 23, 59);
+        if now.date_naive() == day.date_naive() {
+            day_end = day_end.min(Fmt::at(now, now.hour(), now.minute()));
+        }
+        let interval = chrono::Duration::minutes(settings.interval_minutes);
         let workday = Fmt::at(day, settings.workday_start_hour, settings.workday_start_minute);
-        let last = entries.iter().map(|e| e.end).max().unwrap_or(workday);
-        let start = last.min(day_end - chrono::Duration::minutes(1));
-        let end = (start + chrono::Duration::minutes(settings.interval_minutes)).min(day_end);
+        let last = entries
+            .iter()
+            .map(|e| e.end)
+            .max()
+            .unwrap_or_else(|| workday.min(day_end - interval));
+        let start = day_start.max(last.min(day_end - chrono::Duration::minutes(1)));
+        let end = (start + interval).min(day_end);
         (start, end)
     }
 
@@ -473,7 +516,12 @@ impl Summarize {
         out
     }
 
+    /// Isti CSV kao macOS/Windows: vremena u UTC-u bez frakcije (`2026-10-20T06:00:00Z`,
+    /// kao `ISO8601DateFormatter`), minute zaokružene s polovicom od nule.
     pub fn csv(entries: &[Entry]) -> String {
+        let iso = |d: DateTime<Local>| {
+            d.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Secs, true)
+        };
         let mut sorted: Vec<&Entry> = entries.iter().collect();
         sorted.sort_by_key(|e| e.start);
 
@@ -487,8 +535,8 @@ impl Summarize {
             };
             out += &format!(
                 "{},{},{},\"{}\",{}\n",
-                e.start.to_rfc3339(),
-                e.end.to_rfc3339(),
+                iso(e.start),
+                iso(e.end),
                 minutes,
                 text,
                 kind
@@ -527,6 +575,63 @@ mod tests {
         assert_eq!((day[1].start, day[1].end, day[1].id), (at(11, 0), at(11, 15), c_id));
         assert_eq!((day[2].start, day[2].end), (at(11, 30), at(12, 0)));
         assert_ne!(day[2].id, c_id);
+    }
+
+    #[test]
+    fn csv_uses_utc_seconds_and_rounds_half_up() {
+        // 7,5 min → 8 (macOS `.rounded()`), frakcija sekunde se ne piše.
+        let start = at(8, 0) + chrono::Duration::milliseconds(500);
+        let end = at(8, 7) + chrono::Duration::seconds(30) + chrono::Duration::milliseconds(500);
+        let csv = Summarize::csv(&[Entry::new(start, end, "Rad \"X\"", EntryKind::Work)]);
+        let utc = |d: DateTime<Local>| {
+            d.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%SZ").to_string()
+        };
+        let row = format!("{},{},8,\"Rad \"\"X\"\"\",work\n", utc(start), utc(end));
+        assert_eq!(csv, format!("start,end,minutes,text,kind\n{row}"));
+    }
+
+    #[test]
+    fn uncovered_parts() {
+        let entries = vec![
+            Entry::new(at(10, 10), at(10, 20), "A", EntryKind::Work),
+            Entry::new(at(10, 40), at(10, 50), "B", EntryKind::Work),
+        ];
+        assert_eq!(Summarize::uncovered(&[], at(10, 0), at(10, 30)), vec![(at(10, 0), at(10, 30))]);
+        assert_eq!(
+            Summarize::uncovered(&entries, at(10, 0), at(11, 0)),
+            vec![(at(10, 0), at(10, 10)), (at(10, 20), at(10, 40)), (at(10, 50), at(11, 0))]
+        );
+        assert_eq!(Summarize::uncovered(&entries, at(10, 15), at(10, 30)), vec![(at(10, 20), at(10, 30))]);
+        assert!(Summarize::uncovered(&entries, at(10, 12), at(10, 18)).is_empty());
+        assert!(Summarize::uncovered(&entries, at(10, 30), at(10, 0)).is_empty());
+        let overlapping = vec![
+            Entry::new(at(10, 0), at(10, 20), "A", EntryKind::Work),
+            Entry::new(at(10, 5), at(10, 25), "B", EntryKind::Work),
+        ];
+        assert_eq!(
+            Summarize::uncovered(&overlapping, at(9, 50), at(10, 30)),
+            vec![(at(9, 50), at(10, 0)), (at(10, 25), at(10, 30))]
+        );
+    }
+
+    #[test]
+    fn suggested_range_stays_in_the_past() {
+        let settings = AppSettings {
+            interval_minutes: 15,
+            workday_start_hour: 9,
+            workday_start_minute: 0,
+            ..AppSettings::default()
+        };
+        let entries = vec![Entry::new(at(10, 10), at(10, 50), "A", EntryKind::Work)];
+        let tomorrow = at(12, 0) + chrono::Duration::days(1);
+        // Prošli dan: od kraja zadnjeg unosa / od početka radnog dana.
+        assert_eq!(Summarize::suggested_range(&entries, at(0, 0), &settings, tomorrow), (at(10, 50), at(11, 5)));
+        assert_eq!(Summarize::suggested_range(&[], at(0, 0), &settings, tomorrow), (at(9, 0), at(9, 15)));
+        // Danas: najkasnije do sada (cijele minute).
+        let now = at(10, 58) + chrono::Duration::seconds(30);
+        assert_eq!(Summarize::suggested_range(&entries, at(0, 0), &settings, now), (at(10, 50), at(10, 58)));
+        let early = at(8, 0) + chrono::Duration::seconds(40);
+        assert_eq!(Summarize::suggested_range(&[], at(0, 0), &settings, early), (at(7, 45), at(8, 0)));
     }
 
     #[test]

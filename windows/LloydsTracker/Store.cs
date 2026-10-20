@@ -40,17 +40,8 @@ internal static class Store
 
     public static List<Entry> LoadDay(string key)
     {
-        try
-        {
-            if (!File.Exists(DayPath(key))) return new List<Entry>();
-            var data = File.ReadAllText(DayPath(key));
-            var entries = JsonSerializer.Deserialize<List<Entry>>(data, Options) ?? new List<Entry>();
-            return entries.OrderBy(e => e.Start).ToList();
-        }
-        catch
-        {
-            return new List<Entry>();
-        }
+        var entries = Load<List<Entry>>(DayPath(key)) ?? new List<Entry>();
+        return entries.OrderBy(e => e.Start).ToList();
     }
 
     public static void SaveDay(string key, IEnumerable<Entry> entries)
@@ -63,18 +54,7 @@ internal static class Store
 
     private static string SettingsPath => Path.Combine(Directory, "settings.json");
 
-    public static AppSettings LoadSettings()
-    {
-        try
-        {
-            if (!File.Exists(SettingsPath)) return new AppSettings();
-            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Options) ?? new AppSettings();
-        }
-        catch
-        {
-            return new AppSettings();
-        }
-    }
+    public static AppSettings LoadSettings() => Load<AppSettings>(SettingsPath) ?? new AppSettings();
 
     public static void SaveSettings(AppSettings settings)
         => WriteAtomic(SettingsPath, JsonSerializer.Serialize(settings, Options));
@@ -83,21 +63,47 @@ internal static class Store
 
     private static string HistoryPath => Path.Combine(Directory, "history.json");
 
-    public static List<string> LoadHistory()
-    {
-        try
-        {
-            if (!File.Exists(HistoryPath)) return new List<string>();
-            return JsonSerializer.Deserialize<List<string>>(File.ReadAllText(HistoryPath), Options) ?? new List<string>();
-        }
-        catch
-        {
-            return new List<string>();
-        }
-    }
+    public static List<string> LoadHistory() => Load<List<string>>(HistoryPath) ?? new List<string>();
 
     public static void SaveHistory(IEnumerable<string> history)
         => WriteAtomic(HistoryPath, JsonSerializer.Serialize(history.ToList(), Options));
+
+    // MARK: Corrupt files
+
+    /// <summary>Missing file → null. A file that can't be read or deserialized (truncated,
+    /// hand-edited, newer schema) is moved aside before returning null — otherwise the next
+    /// save would overwrite it with an empty day / default settings.</summary>
+    private static T? Load<T>(string path) where T : class
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            // "null" isn't something we ever write — treat it as corrupt, like Swift/serde do.
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Options)
+                ?? throw new JsonException("null");
+        }
+        catch
+        {
+            Quarantine(path);
+            return null;
+        }
+    }
+
+    /// <summary>2026-07-20.json → 2026-07-20.json.corrupt-20260720-143000 (doesn't end in
+    /// .json, so the app never reads or overwrites it again).</summary>
+    private static void Quarantine(string path)
+    {
+        string target = $"{path}.corrupt-{DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}";
+        try
+        {
+            File.Move(path, target);
+            System.Diagnostics.Debug.WriteLine($"LloydsTracker: corrupt {Path.GetFileName(path)} moved to {Path.GetFileName(target)}");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"LloydsTracker: corrupt {Path.GetFileName(path)} could not be moved: {ex.Message}");
+        }
+    }
 
     /// <summary>Write via a temp file + move, so a crash mid-write can't corrupt the target.</summary>
     private static void WriteAtomic(string path, string contents)

@@ -118,6 +118,7 @@ internal sealed class AutoStopWarningForm : Form
             int minutes = Options[i];
             var chip = new FlatButton
             {
+                Focusable = false,
                 Text = ExtendLabel(minutes),
                 SubText = Fmt.Hhmm(_stopAt.AddMinutes(minutes)),
                 SubFont = Brand.Mono(7.5f),
@@ -139,6 +140,7 @@ internal sealed class AutoStopWarningForm : Form
 
         var stopNow = new FlatButton
         {
+            Focusable = false,
             // The period is recorded up to the scheduled time either way, so the button says so.
             Text = $"Zaustavi sad — bilježi do {Fmt.Hhmm(_stopAt)}",
             TextColor = Palette.Gray,
@@ -159,7 +161,7 @@ internal sealed class AutoStopWarningForm : Form
         // Bottom-right corner — the prompt sits top-right, so the two never overlap.
         var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Bottom - Height - Brand.S(24));
-        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
+        Region = Brand.RoundedRegion(Size, Brand.Sf(16));
 
         UpdateCountdown();
     }

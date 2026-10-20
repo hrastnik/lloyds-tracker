@@ -29,8 +29,7 @@ enum Store {
     }
 
     static func loadDay(_ key: String) -> [Entry] {
-        guard let data = try? Data(contentsOf: dayURL(key)),
-              let entries = try? decoder.decode([Entry].self, from: data) else { return [] }
+        guard let entries = load([Entry].self, from: dayURL(key)) else { return [] }
         return entries.sorted { $0.start < $1.start }
     }
 
@@ -45,9 +44,7 @@ enum Store {
     private static var settingsURL: URL { directory.appendingPathComponent("settings.json") }
 
     static func loadSettings() -> AppSettings {
-        guard let data = try? Data(contentsOf: settingsURL),
-              let s = try? decoder.decode(AppSettings.self, from: data) else { return AppSettings() }
-        return s
+        load(AppSettings.self, from: settingsURL) ?? AppSettings()
     }
 
     static func saveSettings(_ settings: AppSettings) {
@@ -60,13 +57,45 @@ enum Store {
     private static var historyURL: URL { directory.appendingPathComponent("history.json") }
 
     static func loadHistory() -> [String] {
-        guard let data = try? Data(contentsOf: historyURL),
-              let h = try? decoder.decode([String].self, from: data) else { return [] }
-        return h
+        load([String].self, from: historyURL) ?? []
     }
 
     static func saveHistory(_ history: [String]) {
         guard let data = try? encoder.encode(history) else { return }
         try? data.write(to: historyURL, options: .atomic)
+    }
+
+    // MARK: Pokvarene datoteke
+
+    /// Nepostojeća datoteka → nil. Datoteka koja se ne da pročitati ili dekodirati (krnja,
+    /// ručno pokvarena, novija shema) se makne u stranu prije nego što vrati nil — inače bi je
+    /// sljedeći zapis prebrisao praznim danom / defaultnim postavkama.
+    private static func load<T: Decodable>(_ type: T.Type, from url: URL) -> T? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        if let data = try? Data(contentsOf: url), let value = try? decoder.decode(T.self, from: data) {
+            return value
+        }
+        quarantine(url)
+        return nil
+    }
+
+    private static let corruptStamp: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
+
+    /// `2026-07-20.json` → `2026-07-20.json.corrupt-20260720-143000` (ne završava na
+    /// `.json`, pa je app više ne čita ni ne prepisuje).
+    private static func quarantine(_ url: URL) {
+        let target = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.lastPathComponent).corrupt-\(corruptStamp.string(from: Date()))")
+        do {
+            try FileManager.default.moveItem(at: url, to: target)
+            NSLog("LloydsTracker: neispravan %@ premješten u %@", url.lastPathComponent, target.lastPathComponent)
+        } catch {
+            NSLog("LloydsTracker: neispravan %@ se ne da premjestiti: %@", url.lastPathComponent, "\(error)")
+        }
     }
 }

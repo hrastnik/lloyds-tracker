@@ -27,10 +27,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.MouseClick += OnTrayClick;
         _tray.ContextMenuStrip = BuildTrayMenu();
 
-        _popover = new MenuBarPopover(_engine, OpenSummary, OpenSettings, Quit);
+        _popover = new MenuBarPopover(_engine, () => OpenSummary(), OpenSettings, Quit);
         _popover.VisibleChanged += (_, _) => { if (!_popover.Visible) _lastHidden = Environment.TickCount64; };
 
-        _engine.OpenSummary = OpenSummary;
+        _engine.OpenSummary = day => OpenSummary(day);
         _engine.Changed += UpdateTray;
 
         UpdateTray();
@@ -60,16 +60,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _tray.Text = $"Lloyds Tracker — {_engine.StatusText}";
     }
 
-    private void OpenSummary()
+    /// <summary><paramref name="day"/> — the day to show (the end of the day opens it on the day
+    /// just closed, also when the window is already open); from the menu an open window stays on
+    /// its day.</summary>
+    private void OpenSummary(DateTime? day = null)
     {
         if (_summary is { IsDisposed: false })
         {
-            _summary.RefreshData();
+            if (day is DateTime d) _summary.ShowDay(d);
+            else _summary.RefreshData();
             _summary.WindowState = FormWindowState.Normal;
             _summary.Activate();
             return;
         }
-        _summary = new SummaryForm(_engine);
+        _summary = new SummaryForm(_engine, day ?? DateTime.Now);
         _summary.FormClosed += (_, _) => _summary = null;
         _summary.Show();
         _summary.Activate();

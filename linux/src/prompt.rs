@@ -227,7 +227,7 @@ impl PromptWindow {
             let me = Rc::downgrade(self);
             actions.append(&ui::button("Odgodi 5 min", &["link"], move || {
                 if let Some(me) = me.upgrade() {
-                    me.window.close();
+                    me.window.destroy();
                     (me.on_snooze)();
                 }
             }));
@@ -263,6 +263,19 @@ impl PromptWindow {
             });
         }
         self.window.add_controller(key);
+
+        // Alt+F4 / zatvaranje iz window managera = Preskoči — inače engine nikad ne dobije
+        // odgovor (a uz zadnji prompt dan ostane zaglavljen). Programska zatvaranja idu preko
+        // `destroy()`, koji ovaj signal ne šalje.
+        {
+            let me = Rc::downgrade(self);
+            self.window.connect_close_request(move |_| {
+                if let Some(me) = me.upgrade() {
+                    me.skip();
+                }
+                Propagation::Stop
+            });
+        }
 
         self.window.add_css_class("brand");
         match self.style {
@@ -301,10 +314,23 @@ impl PromptWindow {
 
     // MARK: - Segmenti
 
-    /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti.
+    /// Unutarnje točke 5-min mreže na kojima se period može razdvojiti. Kad produženje
+    /// prorijedi mrežu (5 → 10 min), već postavljeni rezovi ostaju — inače bi se njihovi
+    /// blokovi spojili, a tekst upisan u njih nestao (ni prikazan ni spremljen).
     fn boundaries(&self) -> Vec<DateTime<Local>> {
         let s = self.state.borrow();
-        grid_boundaries(s.start, s.end)
+        let mut points = grid_boundaries(s.start, s.end);
+        let kept: Vec<_> = s
+            .splits
+            .iter()
+            .filter(|&&ts| !points.iter().any(|p| p.timestamp() == ts))
+            .filter_map(|&ts| DateTime::from_timestamp(ts, 0))
+            .map(|b| b.with_timezone(&Local))
+            .filter(|b| *b > s.start && *b < s.end)
+            .collect();
+        points.extend(kept);
+        points.sort();
+        points
     }
 
     /// Preskočeni periodi iz prijašnjih promptova, najstariji prvi.
@@ -321,10 +347,11 @@ impl PromptWindow {
 
     /// Spojeni nizovi blokova glavnog perioda s jednim opisom.
     fn main_segments(&self) -> Vec<(DateTime<Local>, DateTime<Local>)> {
+        let boundaries = self.boundaries();
         let s = self.state.borrow();
         let mut result = Vec::new();
         let mut from = s.start;
-        for b in grid_boundaries(s.start, s.end) {
+        for b in boundaries {
             if s.splits.contains(&b.timestamp()) {
                 result.push((from, b));
                 from = b;
@@ -404,6 +431,10 @@ impl PromptWindow {
         self.reposition_split_buttons();
         self.bar_area.queue_draw();
 
+        // Polja se grade iznova, pa se kursor (i odabir) fokusiranog polja pamti — inače bi
+        // produženje prompta dok tipkaš bacilo kursor na kraj teksta.
+        let caret = self.caret();
+
         // Redovi glavnog perioda; polja preskočenih redova i "nastavljam s" ostaju.
         while let Some(child) = self.segments_box.first_child() {
             self.segments_box.remove(&child);
@@ -424,19 +455,42 @@ impl PromptWindow {
             self.segments_box.append(&row);
         }
 
-        self.focus_current_field();
+        self.focus_field(caret);
     }
 
-    /// Fokus na zapamćeni segment (ili prvi red, ako je taj u međuvremenu otpao).
+    /// Fokus na zapamćeni segment (ili prvi red, ako je taj u međuvremenu otpao), kursor na
+    /// kraj teksta.
     fn focus_current_field(&self) {
-        let key = self.state.borrow().focused;
-        let entry = key
-            .and_then(|key| self.entry_for(key))
-            .or_else(|| self.segments().first().and_then(|(from, _)| self.entry_for(from.timestamp())));
-        if let Some(entry) = entry {
-            entry.grab_focus();
-            entry.set_position(-1);
+        self.focus_field(None);
+    }
+
+    /// Kao `focus_current_field`, ali ako fokus ostaje na polju iz `caret` (isti ključ),
+    /// vrati mu kursor/odabir umjesto skoka na kraj.
+    fn focus_field(&self, caret: Option<(i64, i32, i32)>) {
+        let key = self
+            .state
+            .borrow()
+            .focused
+            .filter(|key| self.fields.borrow().contains_key(key))
+            .or_else(|| self.segments().first().map(|(from, _)| from.timestamp()));
+        let Some((key, entry)) = key.and_then(|key| Some((key, self.entry_for(key)?))) else {
+            return;
+        };
+        entry.grab_focus();
+        match caret {
+            Some((k, start, end)) if k == key => entry.select_region(start, end),
+            _ => entry.set_position(-1),
         }
+    }
+
+    /// Ključ fokusiranog polja s njegovim odabirom (ili kursorom, kad ništa nije odabrano).
+    fn caret(&self) -> Option<(i64, i32, i32)> {
+        let key = self.state.borrow().focused?;
+        let entry = self.entry_for(key)?;
+        let (start, end) = entry
+            .selection_bounds()
+            .unwrap_or((entry.position(), entry.position()));
+        Some((key, start, end))
     }
 
     fn reposition_split_buttons(&self) {
@@ -607,8 +661,9 @@ impl PromptWindow {
         // Vremena granica ispod trake.
         cr.select_font_face("monospace", gtk4::cairo::FontSlant::Normal, gtk4::cairo::FontWeight::Normal);
         cr.set_font_size(9.0);
+        let boundaries = self.boundaries();
         let splits = &self.state.borrow().splits;
-        for b in grid_boundaries(start, end) {
+        for b in boundaries {
             let x = (b - start).num_seconds() as f64 / total * width;
             let text = Fmt::hhmm(b);
             let extents = cr.text_extents(&text).map(|e| e.width()).unwrap_or(20.0);
@@ -704,7 +759,7 @@ impl PromptWindow {
             .is_manual
             .then(|| texts.get(&NEXT_UP_KEY).cloned().unwrap_or_default());
 
-        self.window.close();
+        self.window.destroy();
         (self.on_submit)(PromptResult { segments, next_up });
     }
 
@@ -725,7 +780,7 @@ impl PromptWindow {
     }
 
     pub fn close(&self) {
-        self.window.close();
+        self.window.destroy();
     }
 }
 

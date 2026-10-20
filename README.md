@@ -124,4 +124,9 @@ settings.json     # postavke
 - Windows: `%APPDATA%\LloydsTracker\`
 - Linux: `~/.local/share/LloydsTracker/`
 
-CSV export: `start,end,minutes,text,kind`.
+Datoteka koja se ne da pročitati (krnja, ručno pokvarena) se ne prebriše: app je preimenuje
+u npr. `2026-07-15.json.corrupt-20260715-143000` i nastavi kao da je nema (prazan dan /
+default postavke), pa se original može ručno popraviti i vratiti.
+
+CSV export: `start,end,minutes,text,kind` — vremena isto u UTC-u, minute zaokružene
+(pola minute naviše); isti file na sva tri porta.

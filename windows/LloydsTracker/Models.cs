@@ -28,7 +28,7 @@ public sealed class Entry
     public EntryKind Kind { get; set; } = EntryKind.Work;
 
     [JsonIgnore]
-    public double Duration => (End - Start).TotalSeconds;
+    public double Duration => Fmt.Seconds(Start, End);
 
     public Entry() { }
 
@@ -150,12 +150,14 @@ public readonly record struct PromptSegment(DateTime Start, DateTime End, string
 /// <summary>A period with no description — a skipped period carried forward.</summary>
 public readonly record struct PromptSpan(DateTime Start, DateTime End)
 {
-    public double Duration => (End - Start).TotalSeconds;
+    public double Duration => Fmt.Seconds(Start, End);
 }
 
 public sealed class PromptRequest
 {
-    public readonly record struct PendingPause(DateTime Start, string Reason);
+    /// <summary>The absence after a return prompt's period — the pause is already recorded;
+    /// <c>End</c> is the moment of return (the next period starts there, not at the answer).</summary>
+    public readonly record struct PendingPause(DateTime Start, DateTime End);
 
     /// <summary>Start/End are settable because the engine merges adjacent carried periods
     /// into the main one just before showing the prompt (see TrackerEngine.Show).</summary>
@@ -201,7 +203,7 @@ public sealed class ChronoRow
     public string Text { get; set; } = "";
     public EntryKind Kind { get; set; }
 
-    public double Duration => (End - Start).TotalSeconds;
+    public double Duration => Fmt.Seconds(Start, End);
     public bool IsMerged => Ids.Count > 1;
 }
 
@@ -258,14 +260,38 @@ internal static class Summarize
         day.AddRange(result);
     }
 
-    /// <summary>Suggested range for "Dodaj unos": from the end of the last entry (or the
-    /// workday start if there are none), one interval long, within the same day.</summary>
-    public static (DateTime Start, DateTime End) SuggestedRange(IEnumerable<Entry> entries, DateTime day, AppSettings settings)
+    /// <summary>The parts of <c>start…end</c> not covered by any entry. Automatic entries (prompt
+    /// answer, pause, absence) fill only those — an entry added or corrected by hand in the day
+    /// view takes precedence and nothing counts twice.</summary>
+    public static List<(DateTime Start, DateTime End)> Uncovered(IEnumerable<Entry> entries, DateTime start, DateTime end)
     {
-        var dayEnd = day.Date.AddDays(1).AddMinutes(-1);
+        var parts = new List<(DateTime Start, DateTime End)>();
+        var cursor = start;
+        foreach (var e in entries.OrderBy(x => x.Start))
+        {
+            if (e.End <= cursor || e.Start >= end) continue;
+            if (e.Start > cursor) parts.Add((cursor, e.Start));
+            cursor = Max(cursor, e.End);
+            if (cursor >= end) break;
+        }
+        if (cursor < end) parts.Add((cursor, end));
+        return parts;
+    }
+
+    /// <summary>Suggested range for "Dodaj unos": from the end of the last entry (or the
+    /// workday start if there are none), one interval long, within the same day. Today no later
+    /// than now — an entry can't end in the future (see <c>EntryEditForm</c>).</summary>
+    public static (DateTime Start, DateTime End) SuggestedRange(IEnumerable<Entry> entries, DateTime day, AppSettings settings, DateTime? now = null)
+    {
+        var current = now ?? DateTime.Now;
+        var dayStart = day.Date;
+        var dayEnd = dayStart.AddDays(1).AddMinutes(-1);
+        if (current.Date == dayStart)
+            dayEnd = Min(dayEnd, current.Date.AddHours(current.Hour).AddMinutes(current.Minute));
         var workday = Fmt.At(day, settings.WorkdayStartHour, settings.WorkdayStartMinute);
         var list = entries.ToList();
-        var start = Min(list.Count > 0 ? list.Max(e => e.End) : workday, dayEnd.AddMinutes(-1));
+        var baseTime = list.Count > 0 ? list.Max(e => e.End) : Min(workday, dayEnd.AddMinutes(-settings.IntervalMinutes));
+        var start = Max(dayStart, Min(baseTime, dayEnd.AddMinutes(-1)));
         var end = Min(start.AddMinutes(settings.IntervalMinutes), dayEnd);
         return (start, end);
     }
@@ -373,7 +399,9 @@ internal static class Summarize
         foreach (var e in entries.OrderBy(x => x.Start))
         {
             string text = "\"" + e.Text.Replace("\"", "\"\"") + "\"";
-            int minutes = (int)Math.Round(e.Duration / 60);
+            // Half away from zero like macOS `.rounded()` — Math.Round's default (to even)
+            // would write 2.5 min as 2.
+            int minutes = (int)Math.Round(e.Duration / 60, MidpointRounding.AwayFromZero);
             sb.Append(Iso(e.Start)).Append(',')
               .Append(Iso(e.End)).Append(',')
               .Append(minutes).Append(',')
@@ -383,7 +411,10 @@ internal static class Summarize
         return sb.ToString();
     }
 
-    private static string Iso(DateTime d) => d.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
+    // Invariant: in a custom format ':' is the culture's time separator, and the culture's
+    // calendar picks the year (th-TH would write 2569).
+    private static string Iso(DateTime d)
+        => d.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
     private static DateTime Min(DateTime a, DateTime b) => a <= b ? a : b;

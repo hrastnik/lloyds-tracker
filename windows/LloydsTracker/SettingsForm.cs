@@ -23,6 +23,9 @@ internal sealed class SettingsForm : Form
     private Label _workdayReminderCaption = null!;
     private Label _workdayBackfillCaption = null!;
     private Label _launchStatus = null!;
+    /// <summary>Space the launch-at-login error takes on the page. Not read from
+    /// <c>Visible</c>: that's false while the page (or the window) is still hidden.</summary>
+    private int _launchStatusHeight;
     private FlatButton _checkNow = null!;
     private Label _updateStatus = null!;
 
@@ -103,7 +106,7 @@ internal sealed class SettingsForm : Form
             CornerRadius = 8,
             Font = font,
             BackColor = Palette.Black,
-            Size = new Size(TextRenderer.MeasureText(title, font).Width + Brand.S(24), Brand.S(28)),
+            Size = new Size(FlatButton.TextWidth(title, font) + Brand.S(24), Brand.S(28)),
             Location = new Point(x, (tabsHeight - Brand.S(28)) / 2),
         };
         int index = _pills.Count;
@@ -193,7 +196,7 @@ internal sealed class SettingsForm : Form
     private string WorkdayBackfillCaption()
         => $"Određuje što pop-up nudi kad ga otvoriš nakon {WorkdayClock(0)}. "
             + $"Uključeno: gumb „Start od {WorkdayClock(0)}” upisuje dan od {WorkdayClock(0)}, pa te prvi prompt pita što si radio od {WorkdayClock(0)} do sada "
-            + $"— npr. probudiš laptop u {WorkdayClock(75)} i prompt te pita za {WorkdayClock(0)}–{WorkdayClock(75)}. Uz njega ostaje i „Počni tek od sada”. "
+            + $"— npr. probudiš laptop u {WorkdayClock(75)} i prompt te pita za {WorkdayClock(0)}–{WorkdayClock(75)}. Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. "
             + "Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.";
 
     /// <summary>The configured workday start, <paramref name="offsetMinutes"/> later, as
@@ -261,19 +264,39 @@ internal sealed class SettingsForm : Form
         Toggle("Pokreni kod prijave (launch at login)", _engine.Settings.LaunchAtLogin, v =>
         {
             _engine.MutateSettings(s => s.LaunchAtLogin = v);
-            _launchStatus.Text = _engine.LaunchAtLoginStatus ?? "";
-            _launchStatus.Visible = !string.IsNullOrEmpty(_launchStatus.Text);
+            UpdateLaunchStatus();
         });
-        _launchStatus = new Label { AutoSize = false, Text = _engine.LaunchAtLoginStatus ?? "", ForeColor = Palette.Orange, BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
-        _launchStatus.Height = MeasureWrap(_launchStatus.Text, _launchStatus.Font, _launchStatus.Width);
-        _launchStatus.Visible = !string.IsNullOrEmpty(_launchStatus.Text);
+        _launchStatus = new Label { AutoSize = false, ForeColor = Palette.Orange, BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40), Visible = false, Height = 0 };
         _stack.Controls.Add(_launchStatus);
-        _y += Math.Max(_launchStatus.Visible ? _launchStatus.Height : 0, 0);
+        UpdateLaunchStatus(); // at build nothing is below it yet, so it only sizes the label
+        _y += _launchStatusHeight;
 
         Toggle("Podsjetnik kod pokretanja (pop-up)", _engine.Settings.ShowStartupReminder,
             v => _engine.MutateSettings(s => s.ShowStartupReminder = v));
         Caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.");
         Gap(8);
+    }
+
+    /// <summary>The launch-at-login error appears or disappears after a toggle while the
+    /// window is open, so everything below it on the page moves by the height change —
+    /// otherwise the error would cover "Podsjetnik kod pokretanja".</summary>
+    private void UpdateLaunchStatus()
+    {
+        string text = _engine.LaunchAtLoginStatus ?? "";
+        _launchStatus.Text = text;
+        _launchStatus.Height = text.Length > 0 ? MeasureWrap(text, _launchStatus.Font, _launchStatus.Width) : 0;
+        _launchStatus.Visible = text.Length > 0;
+        int height = text.Length > 0 ? _launchStatus.Height + Brand.S(4) : 0;
+        int delta = height - _launchStatusHeight;
+        _launchStatusHeight = height;
+        if (delta == 0) return;
+
+        var page = _launchStatus.Parent;
+        if (page == null) return;
+        page.SuspendLayout();
+        foreach (Control c in page.Controls)
+            if (c != _launchStatus && c.Top >= _launchStatus.Top) c.Top += delta;
+        page.ResumeLayout();
     }
 
     private void BuildUpdateSection()
@@ -298,7 +321,7 @@ internal sealed class SettingsForm : Form
 
         // Next to the button; the longest status ("Provjera nije uspjela…") wraps to two lines.
         int statusLeft = _checkNow.Right + Brand.S(10);
-        _updateStatus = new Label { AutoSize = false, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), TextAlign = ContentAlignment.MiddleLeft, Location = new Point(statusLeft, _y - Brand.S(2)), Size = new Size(ClientSize.Width - Brand.S(20) - statusLeft, Brand.S(32)) };
+        _updateStatus = new Label { AutoSize = false, ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), TextAlign = ContentAlignment.MiddleLeft, Location = new Point(statusLeft, _y - Brand.S(2)), Size = new Size(ClientSize.Width - Brand.S(20) - statusLeft, Brand.S(32)) };
         _stack.Controls.Add(_updateStatus);
         _y += Brand.S(32) + Brand.S(4);
 
@@ -331,7 +354,7 @@ internal sealed class SettingsForm : Form
         _y += path.Height + Brand.S(8);
 
         var open = new FlatButton { Text = "Otvori folder s podacima", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12), BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 6, Font = Brand.Ui(9f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(190), Brand.S(28)), Location = new Point(Brand.S(20), _y) };
-        open.Click += (_, _) => { try { System.Diagnostics.Process.Start("explorer.exe", Store.Directory); } catch { } };
+        open.Click += (_, _) => SummaryForm.OpenDataFolder();
         _stack.Controls.Add(open);
         _y += open.Height + Brand.S(16);
     }
@@ -431,7 +454,7 @@ internal sealed class SettingsForm : Form
 
     private Label Caption(string text)
     {
-        var label = new Label { AutoSize = false, Text = text, ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
+        var label = new Label { AutoSize = false, Text = text, ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black, Font = Brand.Ui(8f), Location = new Point(Brand.S(20), _y), Width = ClientSize.Width - Brand.S(40) };
         label.Height = MeasureWrap(text, label.Font, label.Width);
         _stack.Controls.Add(label);
         _y += label.Height + Brand.S(4);

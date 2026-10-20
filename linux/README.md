@@ -18,6 +18,11 @@ kopirati ili exportati u CSV.
   ikona ide preko [StatusNotifierItem](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/)
   spec-a (KDE/freedesktop). Meni crta desktop (host), a ne aplikacija.
 - **DBus (`zbus`)** za detekciju neaktivnosti i zaključanog ekrana.
+- **Izgled ne ovisi o temi sustava.** Svi prozori su Lloyds crni, a i nativni widgeti
+  (padajući izbornici i njihovi popoveri, brojčana polja, prekidači, tabovi u postavkama)
+  stilizirani su u `theme.rs`, pa izgledaju isto na svijetloj i tamnoj GTK temi. App uz to
+  traži tamnu varijantu teme (`gtk-application-prefer-dark-theme`) za ono što CSS ne
+  pokriva (npr. GTK-ov dijalog za spremanje CSV-a, kad nema portala).
 - **HTTP: `ureq` + rustls** samo za provjeru nove verzije (GitHub API); TLS je čisti Rust,
   pa nema ovisnosti o sistemskom OpenSSL-u.
 
@@ -104,9 +109,13 @@ prompt iskoči u svoje vrijeme (10:15, 10:30…) kao i inače.
 Klik na bilo koji red u tabu **Kronološki** otvara **uređivač na mjestu reda**: vrijeme
 *od*/*do* upisuje se rukom (`9:30`, `930`, `9`…; strelice ↑/↓ pomiču za 5 min), uz opis (s
 izborom iz povijesti) i vrstu (rad/pauza). Trajanje se računa uživo, Enter sprema, Esc
-odustaje, a **Obriši** je u istom uređivaču. Radi i za prijašnje dane. Kod spojenog reda
+odustaje, a **Obriši** je u istom uređivaču. Radi i za prijašnje dane (takav unos ne ide u
+povijest, pa ne mijenja pre-fill sljedećeg prompta). Kod spojenog reda
 (`2×`) promjena samo opisa ili vrste zadržava blokove, a promjena vremena ih **stopi u jedan
 unos** — novi raspon nema stare granice blokova (uređivač na to i upozori).
+Vrijeme koje nisi dirao ostaje točno kakvo je bilo (sa sekundama), pa ispravak samo opisa ne
+pomiče unos. Kraj upisan prije početka znači **sutradan** (`23:30`–`00:30`, `…`–`00:00`), do
+12 h trajanja — `10:00`–`9:00` je i dalje greška.
 
 **Dodavanje unosa:** nezabilježeno vrijeme između unosa (≥ 1 min) prikazuje se kao
 isprekidani red `+ 10:15–10:45 nezabilježeno · 30m` — klik ga popuni novim unosom. Gumb
@@ -114,6 +123,10 @@ isprekidani red `+ 10:15–10:45 nezabilježeno · 30m` — klik ga popuni novim
 početka radnog dana) u trajanju jednog intervala. Ako se novi ili ispravljeni unos preklapa
 s drugima, **on ima prednost**: preklopljeni dio ostalih unosa se odreže (ili ih razdvoji
 ili makne) — uređivač prije spremanja javi s koliko se unosa preklapa.
+Unos ne može završiti u budućnosti (danas prijedlog ide najkasnije do sada). Ručni unos ima
+prednost i pred promptom: vrijeme koje si danas već upisao rukom sljedeći prompt više ne pita,
+a ako je prompt bio otvoren od prije, odgovor (kao i pauza ili odsutnost) popuni samo ono što
+je ostalo nepokriveno — ništa se ne broji dvaput.
 
 U tabu **Kronološki** opcija **Spoji susjedne unose istog naziva** (uključena po defaultu)
 prikazuje niz susjednih unosa istog opisa kao jedan — `Mamic web 14:45–15:00` +
@@ -137,6 +150,8 @@ default uključena. Tracking se i vikendom može pokrenuti ručno iz menija.
 Uz uključenu **nadoknadu** (default) pop-up, kad je radni dan već počeo, nudi *Start od
 8:30*, a strelice ‹ › uz gumb pomiču početak za jedan interval (uz 15 min u 9:42: 8:30,
 8:45 … 9:15, 9:30). Zadnji korak je početak trenutnog intervala — isto što i start od sada.
+Dok pop-up stoji otvoren, ponuda prati sat (u 11:05 zadnji korak je 11:00), a već odabrano
+vrijeme ostaje odabrano.
 Nadoknada samo pomiče početak trackanja unatrag — prvi prompt onda pita za cijelo jutro
 (8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
 Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, kreće se od kraja
@@ -150,8 +165,14 @@ Dvije neovisne opcije, **obje po defaultu isključene**:
 - **Bilježi pauzu kad je ekran zaključan**.
 
 Kad je opcija uključena, prompt se odgađa dok se ne vratiš; po povratku te pita što si radio
-prije odsutnosti, a samo razdoblje odsutnosti se bilježi kao pauza. Ako su obje isključene,
-prompt te u zakazano vrijeme samo pita što si radio.
+prije odsutnosti, a samo razdoblje odsutnosti se bilježi kao pauza. Isto vrijedi i kad odeš
+od već otvorenog prompta: ako sljedeća granica intervala zatekne odsutnost, prompt se ne
+produžuje nego zatvori, a po povratku te pita samo za vrijeme do odsutnosti. Pauza se
+zapisuje čim se vratiš i traje do povratka — vrijeme dok odgovaraš je već novi period. Ako
+povratni prompt umjesto odgovora zatvoriš sa *Završi dan* ili *Pauziraj*, odsutnost ostaje
+zapisana, a rad prije nje se pita kao zaseban red. Ako računalo zaspi odmah nakon
+zaključavanja (zatvoren poklopac), odsutnost počinje kad je zaspalo, a ne tek kad se
+probudi. Ako su obje isključene, prompt te u zakazano vrijeme samo pita što si radio.
 
 Oboje ovisi o desktopu, jer Wayland namjerno nema globalni input hook. Redom se traži prvi
 dostupan servis, a **što je stvarno pronađeno piše u postavkama** (tab *Radni dan*):
@@ -173,6 +194,8 @@ vrijedi **samo za taj dan**; postavka ostaje nepromijenjena.
 Zaustavljanje u toj zadnjoj minuti bilježi zadnji period **do zakazanog vremena** — dan
 uvijek završi na 16:00, a ne na 15:59. Ako se ne reagira, dan se zatvara sam: zadnji period
 završava u zakazano vrijeme, pa unosi ostaju ispravni i kad se odgovori sljedeći dan.
+Dok zadnji prompt čeka odgovor, meni u traci umjesto *Pauziraj* / *Završi dan* nudi samo
+*Otvori zadnji zapis* (status: „Kraj dana — čeka zadnji zapis").
 
 #### Prompt koji je prenoćio
 
@@ -180,11 +203,20 @@ Zatvoriš laptop bez odgovora na prompt i otvoriš ga **sutra**: dan se ne nasta
 Čim se app probudi, period se **odreže na zadano vrijeme zaustavljanja** i dan se zatvara, pa
 zadnji prompt pita za taj skraćeni period (i to piše u njemu) — a odgovor završi kod jučerašnjeg
 datuma, s ispravnim vremenima. Produženja iz upozorenja (+15 / +30 / +45 / +1 h) se poštuju:
-rez je na produženom vremenu.
+rez je na produženom vremenu. Pregled dana se nakon tog odgovora otvori na jučerašnjem danu
+(kraj dana uvijek otvara pregled na dan koji je upravo zatvoren, i kad je prozor već otvoren).
+
+Dok tracking ne radi, „danas" prati sat: nakon ponoći meni u traci pokazuje današnje unose i
+prije Starta. Sesija koja još traje (i zadnji prompt koji čeka odgovor) drži svoj dan do kraja.
 
 Ograda vrijedi i kad je automatsko zaustavljanje **isključeno** — tada se koristi vrijeme iz
 te sekcije, a ako je rad zabilježen i preko njega (npr. rad poslije ponoći), dan se zatvara u
 ponoć.
+
+Dan pokrenut tek **nakon** vremena zaustavljanja (start u 20:00 uz auto-stop u 16:00 →
+zaustavljanje je zakazano za sutra) smije prijeći ponoć dok računalo radi. Ako je računalo
+**spavalo** preko granice dana (≥ 30 min bez ticka, npr. poklopac zatvoren navečer), dan se
+zatvara u trenutku kad je zaspalo, a zadnji prompt pita samo za period do tada.
 
 ### Nova verzija
 
@@ -237,7 +269,11 @@ Sve je lokalno, u istom čitljivom JSON formatu kao macOS i Windows verzija:
 
 Vremena su ISO 8601 (UTC, npr. `2026-07-15T07:45:00Z`), a ključevi u datotekama idu
 abecedno — kao što ih piše macOS `sortedKeys` encoder — pa su datoteke izravno
-kompatibilne. CSV export: `start,end,minutes,text,kind`.
+kompatibilne. CSV export: `start,end,minutes,text,kind`, vremena isto u UTC-u.
+
+Datoteka koja se ne da pročitati (krnja, ručno pokvarena) se ne prebriše: app je preimenuje
+u npr. `2026-07-15.json.corrupt-20260715-143000` i nastavi kao da je nema (prazan dan /
+default postavke), pa se original može ručno popraviti i vratiti.
 
 ## Struktura koda
 

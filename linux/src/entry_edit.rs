@@ -43,6 +43,9 @@ pub struct EntryEditor {
     target: EditTarget,
     /// Dan pregleda — upisana vremena se tumače unutar njega.
     day: DateTime<Local>,
+    /// Točna vremena s kojima je uređivač otvoren (sa sekundama) — neizmijenjeno polje vraća
+    /// njih, a ne punu minutu (vidi `Fmt::edit_range`).
+    original: (DateTime<Local>, DateTime<Local>),
     entries: Vec<DayEntry>,
     text: Entry,
     start: Entry,
@@ -94,6 +97,7 @@ impl EntryEditor {
         let me = Rc::new(EntryEditor {
             root: ui::vbox(10),
             day,
+            original: initial,
             entries,
             text: text.clone(),
             start: time_entry(&Fmt::hhmm(initial.0)),
@@ -158,7 +162,7 @@ impl EntryEditor {
         let footer = ui::hbox(8);
         if let Some(row) = me.target.row() {
             let label = if row.is_merged() {
-                format!("Obriši ({} bloka)", row.ids.len())
+                format!("Obriši ({})", Fmt::blocks(row.ids.len()))
             } else {
                 "Obriši".to_string()
             };
@@ -287,12 +291,13 @@ impl EntryEditor {
         }
     }
 
-    fn parse(&self, field: &Entry) -> Option<DateTime<Local>> {
-        Fmt::parse_time(&field.text()).map(|(h, m)| Fmt::at(self.day, h, m))
+    fn dates(&self) -> (Option<DateTime<Local>>, Option<DateTime<Local>>) {
+        Fmt::edit_range(&self.start.text(), &self.end.text(), self.day, Some(self.original))
     }
 
     fn range(&self) -> Option<(DateTime<Local>, DateTime<Local>)> {
-        let (start, end) = (self.parse(&self.start)?, self.parse(&self.end)?);
+        let (start, end) = self.dates();
+        let (start, end) = (start?, end?);
         (end > start).then_some((start, end))
     }
 
@@ -300,13 +305,19 @@ impl EntryEditor {
         self.text.text().trim().to_string()
     }
 
+    /// Unos ne smije završiti u budućnosti — sljedeći prompt bi inače pitao za vrijeme koje
+    /// je već "pokriveno" (i jedno od toga bi se izgubilo).
+    fn ends_in_future(&self) -> bool {
+        self.range().is_some_and(|(_, end)| end > Local::now())
+    }
+
     fn is_valid(&self) -> bool {
-        !self.trimmed().is_empty() && self.range().is_some()
+        !self.trimmed().is_empty() && self.range().is_some() && !self.ends_in_future()
     }
 
     fn times_changed(&self) -> bool {
-        match (self.target.row(), self.parse(&self.start), self.parse(&self.end)) {
-            (Some(row), Some(start), Some(end)) => {
+        match (self.target.row(), self.dates()) {
+            (Some(row), (Some(start), Some(end))) => {
                 (start - row.start).num_seconds().abs() > 1 || (end - row.end).num_seconds().abs() > 1
             }
             _ => true,
@@ -327,7 +338,7 @@ impl EntryEditor {
     /// Trajanje, upozorenja i stanje gumba nakon svake promjene — trajanje nakon izmjene je
     /// odmah vidljivo.
     fn sync(&self) {
-        let (start, end) = (self.parse(&self.start), self.parse(&self.end));
+        let (start, end) = self.dates();
         set_class(&self.start, "invalid", start.is_none());
         set_class(&self.end, "invalid", end.is_none());
 
@@ -343,11 +354,16 @@ impl EntryEditor {
             ("Vrijeme upiši kao 9:30 ili 0930.".to_string(), true)
         } else if !ok {
             ("Kraj mora biti nakon početka.".to_string(), true)
+        } else if self.ends_in_future() {
+            (format!("Kraj ne može biti u budućnosti (sad je {}).", Fmt::hhmm(Local::now())), true)
         } else {
             let mut parts = Vec::new();
             if let Some(row) = self.target.row() {
                 if row.is_merged() && self.times_changed() {
-                    parts.push(format!("Promjena vremena stapa {} bloka u jedan unos.", row.ids.len()));
+                    parts.push(format!(
+                        "Promjena vremena stapa {} u jedan unos.",
+                        Fmt::blocks(row.ids.len())
+                    ));
                 }
             }
             let n = self.overlap_count();
@@ -356,6 +372,11 @@ impl EntryEditor {
                 parts.push(format!(
                     "Preklapa se s {n} {noun} — ovaj unos zamjenjuje preklopljeni dio."
                 ));
+            }
+            if let Some((start, end)) = self.range() {
+                if (end - chrono::Duration::seconds(1)).date_naive() != start.date_naive() {
+                    parts.push(format!("Završava iza ponoći ({} sutradan).", Fmt::hhmm(end)));
+                }
             }
             (parts.join(" "), false)
         };

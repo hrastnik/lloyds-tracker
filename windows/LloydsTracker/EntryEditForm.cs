@@ -17,15 +17,21 @@ internal sealed class EntryDraft
     public string Start { get; set; } = "";
     public string End { get; set; } = "";
     public EntryKind Kind { get; set; } = EntryKind.Work;
+    /// <summary>Točna vremena s kojima je uređivač otvoren (sa sekundama) — neizmijenjeno polje
+    /// vraća njih, a ne punu minutu (vidi <see cref="Fmt.EditRange"/>).</summary>
+    public DateTime OriginalStart { get; init; }
+    public DateTime OriginalEnd { get; init; }
 
     public static EntryDraft Edit(ChronoRow row) => new()
     {
         Row = row, Text = row.Text, Start = Fmt.Hhmm(row.Start), End = Fmt.Hhmm(row.End), Kind = row.Kind,
+        OriginalStart = row.Start, OriginalEnd = row.End,
     };
 
     public static EntryDraft New(DateTime start, DateTime end, DateTime? gapStart) => new()
     {
         GapStart = gapStart, Start = Fmt.Hhmm(start), End = Fmt.Hhmm(end),
+        OriginalStart = start, OriginalEnd = end,
     };
 }
 
@@ -71,6 +77,9 @@ internal sealed class EntryEditor : Control
         _entries = entries;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw, true);
+        // Container only — Tab goes straight to its fields and buttons.
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         BackColor = Palette.Black;
 
         _fromLabel = SectionLabel("OD");
@@ -97,14 +106,41 @@ internal sealed class EntryEditor : Control
             // koji se nakon odabira vrati na natpis.
             var items = new List<string> { "Povijest…" };
             items.AddRange(history);
-            _history = Dark.Combo(items.ToArray(), 0, Point.Empty, Brand.S(110));
-            _history.SelectedIndexChanged += (_, _) =>
+            var combo = Dark.Combo(items.ToArray(), 0, Point.Empty, Brand.S(110));
+            combo.DropDownWidth = Dark.DropDownWidthFor(combo, Brand.S(420));
+            // Izbor ovdje nije vrijednost nego radnja (prepiše opis), pa vrijedi samo stavka
+            // izabrana s otvorenog popisa (klik / Enter). Nad zatvorenim drop-downom strelice i
+            // slova inače odmah mijenjaju izbor — ↓ ga zato samo otvori, ostalo ne radi ništa.
+            combo.KeyDown += (_, e) =>
             {
-                if (_history.SelectedIndex <= 0) return;
-                _text.Value = items[_history.SelectedIndex];
-                _history.SelectedIndex = 0;
-                _text.FocusBox();
+                if (combo.DroppedDown || e.Alt) return;
+                switch (e.KeyCode)
+                {
+                    case Keys.Down:
+                        combo.DroppedDown = true;
+                        e.Handled = true;
+                        break;
+                    case Keys.Up or Keys.Left or Keys.Right or Keys.PageUp or Keys.PageDown
+                        or Keys.Home or Keys.End:
+                        e.Handled = true;
+                        break;
+                }
             };
+            combo.KeyPress += (_, e) => { if (!combo.DroppedDown) e.Handled = true; };
+            combo.SelectionChangeCommitted += (_, _) =>
+            {
+                int i = combo.SelectedIndex;
+                if (i > 0)
+                {
+                    _text.Value = items[i];
+                    _text.FocusBox();
+                }
+                ResetHistory(combo);
+            };
+            // Esc / klik mimo popisa — natpis se vrati na "Povijest…" i kad je strelicama
+            // prošao po popisu.
+            combo.DropDownClosed += (_, _) => ResetHistory(combo);
+            _history = combo;
             Controls.Add(_history);
         }
 
@@ -115,11 +151,11 @@ internal sealed class EntryEditor : Control
         {
             _delete = new FlatButton
             {
-                Text = row.IsMerged ? $"Obriši ({row.Ids.Count} bloka)" : "Obriši",
+                Text = row.IsMerged ? $"Obriši ({Fmt.Blocks(row.Ids.Count)})" : "Obriši",
                 TextColor = DeleteRed, Fill = DeleteRed.With(0.12), CornerRadius = 8,
                 Font = Brand.Ui(9f, FontStyle.Bold), BackColor = CardFill,
             };
-            _delete.Size = new Size(TextRenderer.MeasureText(_delete.Text, _delete.Font).Width + Brand.S(24), Brand.S(28));
+            _delete.Size = new Size(FlatButton.TextWidth(_delete.Text, _delete.Font) + Brand.S(24), Brand.S(28));
             _delete.Click += (_, _) => DeleteRequested?.Invoke();
             Controls.Add(_delete);
         }
@@ -179,6 +215,13 @@ internal sealed class EntryEditor : Control
         int total = Math.Clamp(t.Hour * 60 + t.Minute + minutes, 0, 23 * 60 + 59);
         field.Value = $"{total / 60:D2}:{total % 60:D2}";
     }
+
+    /// <summary>Natpis "Povijest…" — tek nakon što combo dovrši svoje notifikacije (redoslijed
+    /// odabira i zatvaranja popisa nije zajamčen), inače bi ga combo vratio na stavku.</summary>
+    private static void ResetHistory(ComboBox combo) => combo.BeginInvoke(new Action(() =>
+    {
+        if (!combo.IsDisposed && combo.SelectedIndex != 0) combo.SelectedIndex = 0;
+    }));
 
     private FlatButton KindPill(string title, EntryKind kind)
     {
@@ -242,10 +285,15 @@ internal sealed class EntryEditor : Control
 
     // MARK: - State
 
-    private DateTime? StartDate => Fmt.ParseTime(_draft.Start) is { } t ? Fmt.At(_day, t.Hour, t.Minute) : null;
-    private DateTime? EndDate => Fmt.ParseTime(_draft.End) is { } t ? Fmt.At(_day, t.Hour, t.Minute) : null;
+    private (DateTime? Start, DateTime? End) Dates
+        => Fmt.EditRange(_draft.Start, _draft.End, _day, (_draft.OriginalStart, _draft.OriginalEnd));
+    private DateTime? StartDate => Dates.Start;
+    private DateTime? EndDate => Dates.End;
     private bool RangeOk => StartDate is DateTime s && EndDate is DateTime e && e > s;
-    private bool IsValid => _draft.Text.Trim().Length > 0 && RangeOk;
+    /// <summary>Unos ne smije završiti u budućnosti — sljedeći prompt bi inače pitao za vrijeme
+    /// koje je već "pokriveno" (i jedno od toga bi se izgubilo).</summary>
+    private bool EndsInFuture => RangeOk && EndDate!.Value > DateTime.Now;
+    private bool IsValid => _draft.Text.Trim().Length > 0 && RangeOk && !EndsInFuture;
 
     private bool TimesChanged
         => _draft.Row is not ChronoRow row || StartDate is not DateTime s || EndDate is not DateTime e
@@ -267,7 +315,7 @@ internal sealed class EntryEditor : Control
         _start.Invalidate();
         _end.Invalidate();
 
-        _duration.Text = startOk && endOk ? Fmt.Dur(Math.Max(0, (EndDate!.Value - StartDate!.Value).TotalSeconds)) : "—";
+        _duration.Text = startOk && endOk ? Fmt.Dur(Math.Max(0, Fmt.Seconds(StartDate!.Value, EndDate!.Value))) : "—";
         _duration.ForeColor = RangeOk ? Palette.Yellow : Palette.Orange;
 
         if (!startOk || !endOk)
@@ -280,14 +328,21 @@ internal sealed class EntryEditor : Control
             _notice.Text = "Kraj mora biti nakon početka.";
             _notice.ForeColor = Palette.Orange;
         }
+        else if (EndsInFuture)
+        {
+            _notice.Text = $"Kraj ne može biti u budućnosti (sad je {Fmt.Hhmm(DateTime.Now)}).";
+            _notice.ForeColor = Palette.Orange;
+        }
         else
         {
             var parts = new List<string>();
             if (_draft.Row is ChronoRow row && row.IsMerged && TimesChanged)
-                parts.Add($"Promjena vremena stapa {row.Ids.Count} bloka u jedan unos.");
+                parts.Add($"Promjena vremena stapa {Fmt.Blocks(row.Ids.Count)} u jedan unos.");
             int n = OverlapCount;
             if (n > 0)
                 parts.Add($"Preklapa se s {n} {(n == 1 ? "unosom" : "unosa")} — ovaj unos zamjenjuje preklopljeni dio.");
+            if (EndDate!.Value.AddSeconds(-1).Date != StartDate!.Value.Date)
+                parts.Add($"Završava iza ponoći ({Fmt.Hhmm(EndDate!.Value)} sutradan).");
             _notice.Text = string.Join(" ", parts);
             _notice.ForeColor = Palette.Yellow.OverBlack(0.85);
         }

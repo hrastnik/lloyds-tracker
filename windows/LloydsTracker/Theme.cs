@@ -19,13 +19,18 @@ internal static class Palette
 
     /// <summary>Flatten a semi-transparent brand color over the black background,
     /// so GDI brushes that don't blend still read correctly.</summary>
-    public static Color OverBlack(this Color c, double alpha)
+    public static Color OverBlack(this Color c, double alpha) => c.Over(Black, alpha);
+
+    /// <summary>Flatten a semi-transparent color over the given (opaque) background. A plain
+    /// <see cref="System.Windows.Forms.Label"/> draws with GDI, which ignores the alpha of its
+    /// ForeColor — a dimmed label needs the flattened color.</summary>
+    public static Color Over(this Color c, Color background, double alpha)
     {
         double a = Math.Clamp(alpha, 0, 1);
         return Color.FromArgb(
-            (int)Math.Round(c.R * a + Black.R * (1 - a)),
-            (int)Math.Round(c.G * a + Black.G * (1 - a)),
-            (int)Math.Round(c.B * a + Black.B * (1 - a)));
+            (int)Math.Round(c.R * a + background.R * (1 - a)),
+            (int)Math.Round(c.G * a + background.G * (1 - a)),
+            (int)Math.Round(c.B * a + background.B * (1 - a)));
     }
 }
 
@@ -42,6 +47,12 @@ internal static class Fmt
     // Croatian: "ponedjeljak, 20.7.2026." — EEEE, d.M.yyyy.
     public static string DayTitle(DateTime d) => d.ToString("dddd, d.M.yyyy.", Hr);
 
+    /// <summary>Real seconds from <paramref name="start"/> to <paramref name="end"/>. Local
+    /// DateTime subtraction is wall-clock arithmetic, so across a DST switch it'd be an hour
+    /// off (25 h / 23 h days) — go through UTC instead.</summary>
+    public static double Seconds(DateTime start, DateTime end)
+        => (end.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds;
+
     public static string Dur(double seconds)
     {
         int total = (int)Math.Round(seconds);
@@ -50,6 +61,15 @@ internal static class Fmt
         if (h > 0 && m > 0) return $"{h}h {m}m";
         if (h > 0) return $"{h}h";
         return $"{m}m";
+    }
+
+    /// <summary>"1 blok", "2 bloka", "5 blokova", "21 blok", "12 blokova" — Croatian plural.</summary>
+    public static string Blocks(int n)
+    {
+        int last = n % 10, lastTwo = n % 100;
+        if (last == 1 && lastTwo != 11) return $"{n} blok";
+        if (last is >= 2 and <= 4 && lastTwo is not (>= 12 and <= 14)) return $"{n} bloka";
+        return $"{n} blokova";
     }
 
     /// <summary>A hand-typed time: "9", "930", "0930", "9:30", "9.30" or "9,30".</summary>
@@ -77,6 +97,66 @@ internal static class Fmt
 
     /// <summary>The same day as <paramref name="day"/>, at the given hour and minute.</summary>
     public static DateTime At(DateTime day, int hour, int minute) => day.Date.AddHours(hour).AddMinutes(minute);
+
+    /// <summary>The longest entry allowed to cross midnight when the end is typed "before" the
+    /// start — 23:30–00:30 is an entry over midnight, 10:00–9:00 a typo (not a 23-hour entry).</summary>
+    public static readonly TimeSpan MaxOvernightSpan = TimeSpan.FromHours(12);
+
+    /// <summary>Interprets the entry editor's typed times ("9:30") for the summary day
+    /// <paramref name="day"/>:
+    /// a time that didn't change (same HH:mm as in <paramref name="original"/>) returns the
+    /// original instant, seconds included — otherwise fixing only the description would shift the
+    /// entry by a few seconds (merging blocks and trimming neighbours);
+    /// an entry already past midnight (in the previous day's file) is still read past midnight;
+    /// an end that isn't after the start is the next day (…–00:00, 23:30–00:30), up to
+    /// <see cref="MaxOvernightSpan"/>.</summary>
+    public static (DateTime? Start, DateTime? End) EditRange(
+        string startText, string endText, DateTime day, (DateTime Start, DateTime End)? original)
+    {
+        var dayStart = day.Date;
+        var nextDay = dayStart.AddDays(1);
+        static bool Unchanged((int Hour, int Minute) t, DateTime date) => date.Hour == t.Hour && date.Minute == t.Minute;
+
+        DateTime? start = null;
+        if (ParseTime(startText) is { } st)
+        {
+            if (original is { } o && Unchanged(st, o.Start))
+                start = o.Start;
+            else
+            {
+                var sameDay = At(dayStart, st.Hour, st.Minute);
+                // An entry reaching past midnight: whichever of the two candidates is closer to
+                // the original start (00:10 for a 23:30–00:30 entry is the next day, 23:45 the same).
+                if (original is { } orig && orig.End > nextDay)
+                {
+                    var following = At(nextDay, st.Hour, st.Minute);
+                    start = Math.Abs((following - orig.Start).TotalSeconds) < Math.Abs((sameDay - orig.Start).TotalSeconds)
+                        ? following : sameDay;
+                }
+                else
+                    start = sameDay;
+            }
+        }
+
+        DateTime? end = null;
+        if (ParseTime(endText) is { } et)
+        {
+            if (original is { } o && Unchanged(et, o.End))
+                end = o.End;
+            else
+            {
+                var baseDay = (start ?? dayStart).Date;
+                var e = At(baseDay, et.Hour, et.Minute);
+                if (start is DateTime s && e <= s)
+                {
+                    var rolled = At(baseDay.AddDays(1), et.Hour, et.Minute);
+                    if (rolled - s <= MaxOvernightSpan) e = rolled;
+                }
+                end = e;
+            }
+        }
+        return (start, end);
+    }
 
     public static string Countdown(double seconds)
     {

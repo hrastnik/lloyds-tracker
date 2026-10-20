@@ -47,6 +47,14 @@ enum Fmt {
         return "\(m)m"
     }
 
+    /// "1 blok", "2 bloka", "5 blokova", "21 blok", "12 blokova" — hrvatska množina.
+    static func blocks(_ n: Int) -> String {
+        let (last, lastTwo) = (n % 10, n % 100)
+        if last == 1 && lastTwo != 11 { return "\(n) blok" }
+        if (2...4).contains(last) && !(12...14).contains(lastTwo) { return "\(n) bloka" }
+        return "\(n) blokova"
+    }
+
     /// Vrijeme upisano rukom: "9", "930", "0930", "9:30", "9.30" ili "9,30".
     static func parseTime(_ input: String) -> (hour: Int, minute: Int)? {
         let s = input.trimmingCharacters(in: .whitespaces)
@@ -74,6 +82,67 @@ enum Fmt {
     /// Isti dan kao `day`, u zadani sat i minutu.
     static func at(_ day: Date, hour: Int, minute: Int) -> Date {
         Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: day) ?? day
+    }
+
+    /// Najdulji unos koji smije prijeći ponoć kad je kraj upisan "prije" početka — 23:30–00:30
+    /// je unos preko ponoći, a 10:00–9:00 tipfeler (ne unos od 23 sata).
+    static let maxOvernightSpan: TimeInterval = 12 * 3600
+
+    /// Tumači vremena iz uređivača unosa ("9:30") za dan pregleda `day`:
+    /// - vrijeme koje se nije promijenilo (isti HH:mm kao u `original`) vraća originalni
+    ///   trenutak, sa sekundama — inače bi ispravak samo opisa pomaknuo unos za par sekundi
+    ///   (pa spojio blokove i rezao susjede);
+    /// - unos koji je već iza ponoći (u fileu prethodnog dana) i dalje se tumači iza ponoći;
+    /// - kraj koji nije nakon početka je sutradan (…–00:00, 23:30–00:30), do `maxOvernightSpan`.
+    static func editRange(
+        start startText: String,
+        end endText: String,
+        day: Date,
+        original: (start: Date, end: Date)?
+    ) -> (start: Date?, end: Date?) {
+        let cal = Calendar.current
+        let dayStart = cal.startOfDay(for: day)
+        let nextDay = cal.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(24 * 3600)
+
+        func unchanged(_ t: (hour: Int, minute: Int), _ date: Date) -> Bool {
+            let c = cal.dateComponents([.hour, .minute], from: date)
+            return c.hour == t.hour && c.minute == t.minute
+        }
+
+        var start: Date?
+        if let t = parseTime(startText) {
+            if let o = original, unchanged(t, o.start) {
+                start = o.start
+            } else {
+                let sameDay = at(dayStart, hour: t.hour, minute: t.minute)
+                // Unos koji seže iza ponoći: bliži od dva kandidata originalnom početku
+                // (00:10 za unos 23:30–00:30 je sutradan, 23:45 isti dan).
+                if let o = original, o.end > nextDay {
+                    let following = at(nextDay, hour: t.hour, minute: t.minute)
+                    start = abs(following.timeIntervalSince(o.start)) < abs(sameDay.timeIntervalSince(o.start))
+                        ? following : sameDay
+                } else {
+                    start = sameDay
+                }
+            }
+        }
+
+        var end: Date?
+        if let t = parseTime(endText) {
+            if let o = original, unchanged(t, o.end) {
+                end = o.end
+            } else {
+                let base = cal.startOfDay(for: start ?? dayStart)
+                var e = at(base, hour: t.hour, minute: t.minute)
+                if let s = start, e <= s,
+                   let next = cal.date(byAdding: .day, value: 1, to: base) {
+                    let rolled = at(next, hour: t.hour, minute: t.minute)
+                    if rolled.timeIntervalSince(s) <= maxOvernightSpan { e = rolled }
+                }
+                end = e
+            }
+        }
+        return (start, end)
     }
 
     static func countdown(_ seconds: TimeInterval) -> String {

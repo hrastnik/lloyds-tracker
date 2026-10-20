@@ -12,7 +12,7 @@ internal sealed class SummaryForm : Form
     private readonly TrackerEngine _engine;
     /// <summary>Tooltip za gumbe u redovima (macOS `.help(…)`).</summary>
     private readonly ToolTip _tips = new();
-    private DateTime _date = DateTime.Now;
+    private DateTime _date;
     private ViewMode _mode = ViewMode.Grouped;
 
     private Panel _header = null!;
@@ -34,9 +34,10 @@ internal sealed class SummaryForm : Form
     private string DayKey => Store.DayKey(_date);
     private IReadOnlyList<Entry> Entries => DayKey == _engine.CurrentDayKey ? _engine.Entries : Store.LoadDay(DayKey);
 
-    public SummaryForm(TrackerEngine engine)
+    public SummaryForm(TrackerEngine engine, DateTime day)
     {
         _engine = engine;
+        _date = day;
         Text = "Pregled dana";
         // Brand tile in the title bar / taskbar / Alt+Tab, like the macOS AppIcon.
         Icon = TrayIconFactory.Window;
@@ -53,10 +54,19 @@ internal sealed class SummaryForm : Form
 
     private void OnEngineChanged()
     {
-        if (DayKey == _engine.CurrentDayKey) Rebuild();
+        // Also after midnight, so ▶ lets you move on to the new today.
+        if (DayKey == _engine.CurrentDayKey || _nextButton.Enabled == IsToday()) Rebuild();
     }
 
     public void RefreshData() => Rebuild();
+
+    /// <summary>Jump to a day — the editor belongs to the day it was opened on.</summary>
+    public void ShowDay(DateTime day)
+    {
+        if (Store.DayKey(day) != DayKey) CloseEditor(relayout: false);
+        _date = day;
+        Rebuild();
+    }
 
     private void BuildChrome()
     {
@@ -227,7 +237,7 @@ internal sealed class SummaryForm : Form
         bool merge = _engine.Settings.MergeAdjacentEntries;
         _mergeToggle.Visible = !grouped;
         _mergeToggle.Text = (merge ? "☑" : "☐") + "  Spoji susjedne unose istog naziva";
-        _mergeToggle.Width = TextRenderer.MeasureText(_mergeToggle.Text, _mergeToggle.Font).Width + Brand.S(24);
+        _mergeToggle.Width = FlatButton.TextWidth(_mergeToggle.Text, _mergeToggle.Font) + Brand.S(24);
         _mergeToggle.TextColor = merge ? Palette.Yellow : Palette.Gray;
         _mergeToggle.Fill = Palette.White.OverBlack(merge ? 0.06 : 0.03);
         _mergeToggle.Invalidate();
@@ -252,6 +262,8 @@ internal sealed class SummaryForm : Form
         foreach (Control c in _content.Controls.Cast<Control>().ToList())
         {
             if (c == _editor) continue;
+            // ToolTip would otherwise keep the disposed row (and its tip) forever.
+            _tips.SetToolTip(c, null);
             c.Dispose();
         }
 
@@ -329,6 +341,9 @@ internal sealed class SummaryForm : Form
     private int PlaceEditor(int y, int width)
     {
         var editor = _editor!;
+        // Kao i redovi: sidro desno, pa se suzi kad se pojavi okomiti scrollbar (dodavanje
+        // uređivača često produži sadržaj preko visine) umjesto da izađe desno van.
+        editor.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         editor.SetBounds(Brand.S(16), y, width, editor.Height);
         if (editor.Parent != _content) _content.Controls.Add(editor);
         return y + editor.Height + Brand.S(6);
@@ -345,7 +360,7 @@ internal sealed class SummaryForm : Form
         row.Controls.Add(text);
 
         string ranges = string.Join(" · ", group.Ranges.Select(r => $"{Fmt.Hhmm(r.Start)}–{Fmt.Hhmm(r.End)}"));
-        var rangesLabel = new Label { AutoSize = false, Text = ranges, Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(0.7), BackColor = row.CardFill, Location = new Point(Brand.S(80), Brand.S(28)), Size = new Size(width - Brand.S(90), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        var rangesLabel = new Label { AutoSize = false, Text = ranges, Font = Brand.Mono(8f), ForeColor = Palette.Gray.Over(row.CardFill, 0.7), BackColor = row.CardFill, Location = new Point(Brand.S(80), Brand.S(28)), Size = new Size(width - Brand.S(90), Brand.S(16)), TextAlign = ContentAlignment.MiddleLeft, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         row.Controls.Add(rangesLabel);
 
         _content.Controls.Add(row);
@@ -356,7 +371,7 @@ internal sealed class SummaryForm : Form
     private int AddChronoRow(ChronoRow entry, int y, int width)
     {
         var row = new ChronoRowControl(entry) { Location = new Point(Brand.S(16), y), Width = width, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
-        _tips.SetToolTip(row, entry.IsMerged ? $"Uredi unos ({entry.Ids.Count} bloka)" : "Uredi unos");
+        _tips.SetToolTip(row, entry.IsMerged ? $"Uredi unos ({Fmt.Blocks(entry.Ids.Count)})" : "Uredi unos");
         row.Click += (_, _) => OpenEditor(EntryDraft.Edit(entry));
         _content.Controls.Add(row);
         return y + row.Height + Brand.S(6);
@@ -466,9 +481,15 @@ internal sealed class SummaryForm : Form
         }
     }
 
-    private void OpenDataFolder()
+    /// <summary>Opens the data folder in Explorer. Through the shell (not
+    /// <c>explorer.exe</c> + an unquoted argument), so a path with a space works.</summary>
+    internal static void OpenDataFolder()
     {
-        try { System.Diagnostics.Process.Start("explorer.exe", Store.Directory); }
+        try
+        {
+            var info = new System.Diagnostics.ProcessStartInfo(Store.Directory) { UseShellExecute = true };
+            System.Diagnostics.Process.Start(info);
+        }
         catch { /* best effort */ }
     }
 
@@ -492,6 +513,23 @@ internal sealed class SummaryForm : Form
         protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
         protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
 
+        // Tipkovnica kao kod FlatButtona: Tab do reda, Enter/Space otvara uređivač.
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.Modifiers == Keys.None && (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space))
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                OnClick(EventArgs.Empty);
+                return;
+            }
+            base.OnKeyDown(e);
+        }
+
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+        protected override void OnChangeUICues(UICuesEventArgs e) { Invalidate(); base.OnChangeUICues(e); }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
@@ -500,13 +538,15 @@ internal sealed class SummaryForm : Form
             using (var path = Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(6)))
             using (var b = new SolidBrush(Palette.White.OverBlack(_hover ? 0.08 : 0.03)))
                 g.FillPath(b, path);
+            if (Focused && ShowFocusCues) Brand.FocusRing(g, ClientSize, Brand.Sf(6), Palette.Yellow);
 
             const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
             bool pause = _row.Kind == EntryKind.Pause;
-            using var mono = Brand.Mono(8.5f);
-            using var monoBold = Brand.Mono(8f, FontStyle.Bold);
-            using var ui = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular);
-            using var glyph = Brand.Ui(9.5f);
+            // Brand fonts are shared — not disposed here.
+            var mono = Brand.Mono(8.5f);
+            var monoBold = Brand.Mono(8f, FontStyle.Bold);
+            var ui = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular);
+            var glyph = Brand.Ui(9.5f);
 
             int x = Brand.S(10);
             string time = $"{Fmt.Hhmm(_row.Start)}–{Fmt.Hhmm(_row.End)}";
@@ -546,7 +586,11 @@ internal sealed class SummaryForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _engine.Changed -= OnEngineChanged;
+        if (disposing)
+        {
+            _engine.Changed -= OnEngineChanged;
+            _tips.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

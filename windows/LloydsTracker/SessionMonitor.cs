@@ -38,6 +38,13 @@ internal sealed class SessionMonitor : IDisposable
         }
     }
 
+    /// <summary>Moves the lock moment earlier (the engine knows the computer slept before the
+    /// event arrived — see TrackerEngine.LockTickGap).</summary>
+    public void BackdateLock(DateTime at)
+    {
+        if (IsLocked && LockedAt is DateTime lockedAt && at < lockedAt) LockedAt = at;
+    }
+
     public void Dispose()
     {
         SystemEvents.SessionSwitch -= OnSessionSwitch;

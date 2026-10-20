@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class StartupReminderController {
     private var window: NSWindow?
+    private var model: StartupReminderModel?
     /// Kad je podsjetnik prikazan i s kojom ponudom nadoknade — po tome se vidi je li
     /// otvoreni prozor u međuvremenu zastario (prenoćio, ili je radni dan tek počeo).
     private(set) var shownAt: Date?
@@ -24,9 +25,10 @@ final class StartupReminderController {
     ) {
         guard window == nil else { return }
 
+        let model = StartupReminderModel(startOptions: startOptions)
         let view = StartupReminderView(
             dayTitle: dayTitle,
-            startOptions: startOptions,
+            model: model,
             onStart: { [weak self] from in
                 self?.close()
                 onStart(from)
@@ -59,30 +61,65 @@ final class StartupReminderController {
         panel.isReleasedWhenClosed = false
         PanelFade.appear(panel)
         window = panel
+        self.model = model
         shownAt = Date()
         shownBackfillFrom = startOptions.first
+    }
+
+    /// Ponuda početaka vrijedi za interval u kojem je prozor prikazan — ako stoji satima,
+    /// najkasniji početak zaostaje (prikazan u 8:40, u 11:00 i dalje nudi najviše 8:30).
+    /// Engine mu na novom intervalu pošalje svježu ponudu; odabrano vrijeme ostaje odabrano
+    /// ako je još u ponudi. Samo kad prozor već nudi nadoknadu i nova ponuda nije prazna —
+    /// pojavu nadoknade i prenoćeni prozor rješava zamjena prozora u engineu.
+    func updateStartOptions(_ options: [Date]) {
+        guard let model, !model.startOptions.isEmpty, !options.isEmpty,
+              options != model.startOptions else { return }
+        let old = model.startOptions
+        let selected = old.indices.contains(model.selection) ? old[model.selection] : nil
+        model.selection = selected.flatMap { options.firstIndex(of: $0) }
+            ?? min(model.selection, options.count - 1)
+        model.startOptions = options
+        shownBackfillFrom = options.first
     }
 
     func close() {
         window?.orderOut(nil)
         window = nil
+        model = nil
         shownAt = nil
         shownBackfillFrom = nil
     }
 }
 
+/// Ponuda početaka i odabir u otvorenom podsjetniku — engine je osvježava kad počne novi
+/// interval (vidi `StartupReminderController.updateStartOptions`).
+@MainActor
+final class StartupReminderModel: ObservableObject {
+    @Published var startOptions: [Date]
+    /// Indeks u `startOptions`. Zadano je početak radnog dana — to je razlog zašto je
+    /// pop-up uopće iskočio u zadano vrijeme.
+    @Published var selection = 0
+
+    init(startOptions: [Date]) {
+        self.startOptions = startOptions
+    }
+}
+
 struct StartupReminderView: View {
     let dayTitle: String
-    /// Nije prazno → nudi se i nadoknada jutra: početak se strelicama pomiče od početka
-    /// radnog dana do početka trenutnog intervala, u koracima intervala.
-    let startOptions: [Date]
+    @ObservedObject var model: StartupReminderModel
     /// Parametar je odabrano vrijeme ili nil za start od sada.
     let onStart: (Date?) -> Void
     let onDismiss: () -> Void
 
-    /// Indeks u `startOptions`. Zadano je početak radnog dana — to je razlog zašto je
-    /// pop-up uopće iskočio u zadano vrijeme.
-    @State private var selection = 0
+    /// Nije prazno → nudi se i nadoknada jutra: početak se strelicama pomiče od početka
+    /// radnog dana do početka trenutnog intervala, u koracima intervala.
+    private var startOptions: [Date] { model.startOptions }
+
+    private var selection: Int {
+        get { model.selection }
+        nonmutating set { model.selection = newValue }
+    }
 
     private var selectedStart: Date? {
         startOptions.indices.contains(selection) ? startOptions[selection] : nil
@@ -100,10 +137,13 @@ struct StartupReminderView: View {
                     .font(.system(size: 13, weight: .light))
                     .tracking(2)
                     .foregroundStyle(Color.lloydsGray)
-                Spacer()
+                // Isto kao header menija — dug naslov ponedjeljkom ne smije u dva reda.
+                Spacer(minLength: 0)
                 Text(dayTitle)
                     .font(.system(size: 10))
                     .foregroundStyle(Color.lloydsGray.opacity(0.7))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
 
             VStack(alignment: .leading, spacing: 6) {

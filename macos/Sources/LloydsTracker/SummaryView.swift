@@ -44,10 +44,19 @@ struct SummaryView: View {
         .background(Color.lloydsBlack)
         .preferredColorScheme(.dark)
         .tint(Color.lloydsYellow)
+        .onAppear(perform: takeDayRequest)
+        .onChange(of: engine.summaryDayRequest) { takeDayRequest() }
         // Uređivač pripada danu i prikazu u kojem je otvoren.
         .onChange(of: dayKey) { draft = nil }
         .onChange(of: mode) { if mode == .grouped { draft = nil } }
         .onChange(of: engine.settings.mergeAdjacentEntries) { draft = nil }
+    }
+
+    /// Kraj dana otvara pregled na dan koji je upravo zatvoren — i kad je prozor već otvoren.
+    private func takeDayRequest() {
+        guard let day = engine.summaryDayRequest else { return }
+        engine.summaryDayRequest = nil
+        date = day
     }
 
     private var header: some View {
@@ -231,7 +240,7 @@ struct SummaryView: View {
             .padding(.vertical, 7)
             .padding(.horizontal, 10)
         }
-        .help(row.isMerged ? "Uredi unos (\(row.ids.count) bloka)" : "Uredi unos")
+        .help(row.isMerged ? "Uredi unos (\(Fmt.blocks(row.ids.count)))" : "Uredi unos")
     }
 
     /// Nezabilježeno vrijeme između dva unosa — klik ga popuni novim unosom.

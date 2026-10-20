@@ -70,7 +70,7 @@ struct SettingsView: View {
                     .disabled(!engine.settings.workdayStartEnabled)
                 Toggle("Ponudi i nadoknadu od tog vremena", isOn: $engine.settings.workdayStartBackfillEnabled)
                     .disabled(!engine.settings.workdayStartEnabled)
-                caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prvi prompt pita što si radio od \(workdayStartClock) do sada — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample). Uz njega ostaje i „Počni tek od sada”. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
+                caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prvi prompt pita što si radio od \(workdayStartClock) do sada — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample). Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
                 // Opis kao podnaslov u istom retku (a ne zaseban `caption`) — tab je ionako
                 // najviši, pa svaki red više diže visinu prozora.
                 Toggle(isOn: $engine.settings.skipWeekendReminders) {

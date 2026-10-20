@@ -23,6 +23,9 @@ internal sealed class MenuBarPopover : Form
     private readonly ToolTip _tips = new();
     private Label? _countdown;
     private bool _suppressHide;
+    /// <summary>One pause menu for the popover's lifetime — a new ContextMenuStrip per rebuild
+    /// would be a new window every time, never disposed.</summary>
+    private ContextMenuStrip? _pauseMenu;
 
     public MenuBarPopover(TrackerEngine engine, Action openSummary, Action openSettings, Action quit)
     {
@@ -85,6 +88,8 @@ internal sealed class MenuBarPopover : Form
     private void RebuildContent()
     {
         SuspendLayout();
+        // ToolTip keeps every control it has a tip for (even disposed ones) until it's removed.
+        _tips.RemoveAll();
         foreach (Control c in Controls.Cast<Control>().ToList()) c.Dispose();
         Controls.Clear();
         _countdown = null;
@@ -125,7 +130,8 @@ internal sealed class MenuBarPopover : Form
         tracker.Location = new Point(lloyds.Right + Brand.S(6), top + (Brand.S(18) - tracker.Height) / 2);
         Controls.Add(tracker);
 
-        var day = new Label { AutoSize = true, Text = Fmt.DayTitle(DateTime.Now), Font = Brand.Ui(8f), ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black };
+        var day = new Label { AutoSize = true, Text = Fmt.DayTitle(DateTime.Now), Font = Brand.Ui(8f), ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black };
+        Brand.FitDayTitle(day, Width_ - Brand.S(16) - tracker.Right - Brand.S(12));
         day.Location = new Point(Width_ - Brand.S(16) - day.PreferredWidth, top + (Brand.S(18) - day.Height) / 2);
         day.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         Controls.Add(day);
@@ -174,7 +180,9 @@ internal sealed class MenuBarPopover : Form
         status.Location = new Point(dot.Right + Brand.S(8), top);
         Controls.Add(status);
 
-        if (_engine.IsTracking && _engine.PauseUntil == null && _engine.NextPromptAt != null)
+        // While waiting for the return the boundary has already passed — without CanPromptNow
+        // this would read "prompt za 00:00", but the prompt only comes once you're back.
+        if (_engine.CanPromptNow && _engine.NextPromptAt != null)
         {
             _countdown = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Font = Brand.Mono(8.5f), ForeColor = Palette.Yellow, BackColor = Palette.Black, Width = Brand.S(120), Height = status.Height };
             _countdown.Location = new Point(Width_ - Brand.S(16) - _countdown.Width, top);
@@ -187,7 +195,7 @@ internal sealed class MenuBarPopover : Form
 
         if (_engine.AutoStopText is string autoStop)
         {
-            var info = new Label { AutoSize = true, Text = autoStop, Font = Brand.Ui(8f), ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black, Location = new Point(Brand.S(16), rowY) };
+            var info = new Label { AutoSize = true, Text = autoStop, Font = Brand.Ui(8f), ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black, Location = new Point(Brand.S(16), rowY) };
             Controls.Add(info);
             rowY += info.Height + Brand.S(2);
         }
@@ -211,7 +219,23 @@ internal sealed class MenuBarPopover : Form
             rowY += Brand.S(30) + Brand.S(8);
         }
 
-        if (_engine.IsTracking)
+        if (_engine.AwaitingFinalAnswer)
+        {
+            // Dan je zatvoren, a zadnji prompt čeka odgovor — pauza/stop tu nemaju smisla,
+            // pa nudimo samo povratak na taj prompt.
+            var final = new FlatButton
+            {
+                Text = "✎  Otvori zadnji zapis", TextColor = Palette.Yellow, Fill = Palette.Yellow.With(0.12),
+                BorderColor = Palette.Yellow.With(0.5), BorderWidth = 1, CornerRadius = 8,
+                Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black,
+                Size = new Size(Width_ - Brand.S(32), Brand.S(30)), Location = new Point(Brand.S(16), rowY),
+            };
+            _tips.SetToolTip(final, "Dan je završen — zapiši zadnji period da se dan zatvori");
+            final.Click += (_, _) => { HidePopover(); _engine.FocusFinalPrompt(); };
+            Controls.Add(final);
+            rowY += Brand.S(30);
+        }
+        else if (_engine.IsTracking)
         {
             if (_engine.PauseUntil == null)
             {
@@ -221,7 +245,7 @@ internal sealed class MenuBarPopover : Form
                     Font = Brand.Ui(9.5f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(90), Brand.S(26)),
                     Location = new Point(Brand.S(16), rowY),
                 };
-                var menu = BuildPauseMenu();
+                var menu = _pauseMenu ??= BuildPauseMenu();
                 pause.Click += (_, _) => { _suppressHide = true; menu.Show(pause, new Point(0, pause.Height)); };
                 Controls.Add(pause);
             }
@@ -259,7 +283,9 @@ internal sealed class MenuBarPopover : Form
     private ContextMenuStrip BuildPauseMenu()
     {
         var menu = new ContextMenuStrip { RenderMode = ToolStripRenderMode.System };
-        void Add(string text, int? minutes) => menu.Items.Add(text, null, (_, _) => _engine.Pause(minutes));
+        // Picking a pause closes the popover too, like "Završi dan" — Closed below only hides
+        // it when the focus has left the popover (a click elsewhere).
+        void Add(string text, int? minutes) => menu.Items.Add(text, null, (_, _) => { HidePopover(); _engine.Pause(minutes); });
         Add("15 minuta", 15);
         Add("30 minuta", 30);
         Add("1 sat", 60);
@@ -282,7 +308,7 @@ internal sealed class MenuBarPopover : Form
         CornerRadius = 8,
         Font = Brand.Ui(9.5f, FontStyle.Bold),
         BackColor = Palette.Black,
-        Size = new Size(TextRenderer.MeasureText(text, Brand.Ui(9.5f, FontStyle.Bold)).Width + Brand.S(28), Brand.S(26)),
+        Size = new Size(FlatButton.TextWidth(text, Brand.Ui(9.5f, FontStyle.Bold)) + Brand.S(28), Brand.S(26)),
         Location = location,
     };
 
@@ -307,7 +333,7 @@ internal sealed class MenuBarPopover : Form
 
         if (_engine.Entries.Count == 0)
         {
-            var empty = new Label { AutoSize = true, Text = "Još nema unosa.", Font = Brand.Ui(9f), ForeColor = Palette.Gray.With(0.6), BackColor = Palette.Black, Location = new Point(Brand.S(16), rowY) };
+            var empty = new Label { AutoSize = true, Text = "Još nema unosa.", Font = Brand.Ui(9f), ForeColor = Palette.Gray.OverBlack(0.6), BackColor = Palette.Black, Location = new Point(Brand.S(16), rowY) };
             Controls.Add(empty);
             return rowY + empty.Height + Brand.S(10);
         }
@@ -338,10 +364,10 @@ internal sealed class MenuBarPopover : Form
     private int BuildEntryRow(Entry entry, int y)
     {
         bool pause = entry.Kind == EntryKind.Pause;
-        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(pause ? 0.5 : 0.9), BackColor = Palette.Black, Location = new Point(Brand.S(16), y + Brand.S(2)) };
+        var time = new Label { AutoSize = true, Text = $"{Fmt.Hhmm(entry.Start)}–{Fmt.Hhmm(entry.End)}", Font = Brand.Mono(8f), ForeColor = Palette.Gray.OverBlack(pause ? 0.5 : 0.9), BackColor = Palette.Black, Location = new Point(Brand.S(16), y + Brand.S(2)) };
         Controls.Add(time);
 
-        var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8f), ForeColor = Palette.Gray.With(0.7), BackColor = Palette.Black };
+        var dur = new Label { AutoSize = true, Text = Fmt.Dur(entry.Duration), Font = Brand.Mono(8f), ForeColor = Palette.Gray.OverBlack(0.7), BackColor = Palette.Black };
         dur.Location = new Point(Width_ - Brand.S(16) - dur.PreferredWidth, y + Brand.S(2));
         dur.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         Controls.Add(dur);
@@ -352,7 +378,7 @@ internal sealed class MenuBarPopover : Form
         {
             AutoSize = false, AutoEllipsis = true, Text = entry.Text,
             Font = Brand.Ui(9f, pause ? FontStyle.Italic : FontStyle.Regular),
-            ForeColor = pause ? Palette.Gray.With(0.5) : Palette.White, BackColor = Palette.Black,
+            ForeColor = pause ? Palette.Gray.OverBlack(0.5) : Palette.White, BackColor = Palette.Black,
             Location = new Point(textLeft, y + Brand.S(2)), Size = new Size(Math.Max(Brand.S(20), textRight - textLeft), time.Height),
             TextAlign = ContentAlignment.MiddleLeft,
         };
@@ -388,20 +414,21 @@ internal sealed class MenuBarPopover : Form
         return new FlatButton
         {
             Text = text, TextColor = Palette.Gray, Font = font, BackColor = Palette.Black,
-            Size = new Size(TextRenderer.MeasureText(text, font).Width + Brand.S(8), Brand.S(20)), Location = location,
+            Size = new Size(FlatButton.TextWidth(text, font) + Brand.S(8), Brand.S(20)), Location = location,
         };
     }
 
     private void UpdateCountdown()
     {
         if (_countdown == null || _countdown.IsDisposed) return;
-        if (_engine.IsTracking && _engine.PauseUntil == null && _engine.NextPromptAt is DateTime next)
+        if (_engine.CanPromptNow && _engine.NextPromptAt is DateTime next)
             _countdown.Text = $"prompt za {Fmt.Countdown((next - DateTime.Now).TotalSeconds)}";
     }
 
     private Color StatusColor()
     {
         if (!_engine.IsTracking) return Palette.Gray.With(0.5);
+        if (_engine.AwaitingFinalAnswer) return Palette.Gray;
         if (_engine.PauseUntil != null) return Palette.Orange;
         if (_engine.AwaitingReturnSince != null) return Palette.Blue;
         return Palette.Yellow;
@@ -413,6 +440,8 @@ internal sealed class MenuBarPopover : Form
         {
             _engine.Changed -= OnEngineChanged;
             _tick.Dispose();
+            _tips.Dispose();
+            _pauseMenu?.Dispose();
         }
         base.Dispose(disposing);
     }

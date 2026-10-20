@@ -35,9 +35,12 @@ final class TrackerEngine: ObservableObject {
     /// Preskočeni periodi koji nisu susjedni sljedećem promptu (npr. pauza između) —
     /// nose se dalje kao zasebni redovi dok se ne popune ili dan ne završi.
     private var carriedSpans: [PromptSpan] = []
+    /// Odsutnost čiji povratni prompt (rad prije odsutnosti) još nije odgovoren — ako ga
+    /// zatvori Stop ili Pauza, rad prije odsutnosti se nosi dalje, a period kreće od povratka.
+    private var pendingReturn: PromptRequest.PendingPause?
     /// Dan je zatvoren, a zadnji prompt još čeka odgovor — ništa se više ne zakazuje i
     /// dan se ne smije zatvarati drugi put (inače bi tick vrtio isti prompt u krug).
-    private var awaitingFinalAnswer = false
+    @Published private(set) var awaitingFinalAnswer = false
     private var pausedSince: Date?
     private var isLocked = false
     private var lockedAt: Date?
@@ -48,6 +51,15 @@ final class TrackerEngine: ObservableObject {
     private var autoStopWarningShown = false
     /// Koliko prije automatskog zaustavljanja iskoči upozorenje.
     private let autoStopLead: TimeInterval = 60
+    /// Vrijeme zadnjeg ticka — velika rupa do sljedećeg znači da je računalo spavalo.
+    private var lastTickAt: Date?
+    /// Rupa između tickova nakon koje smatramo da je računalo spavalo (poklopac zatvoren).
+    private let sleepGap: TimeInterval = 30 * 60
+    /// Tick je svake sekunde — veća rupa znači da je računalo u međuvremenu spavalo.
+    /// Zaključavanje javljeno tek nakon takve rupe (poklopac zatvoren odmah nakon
+    /// zaključavanja, notifikacija stigne kod buđenja) dogodilo se najkasnije kod zadnjeg
+    /// ticka prije spavanja.
+    private let lockTickGap: TimeInterval = 5
     /// Dan (dayKey) za koji je podsjetnik na početak radnog dana odrađen — prikazan ili
     /// je dan u međuvremenu pokrenut. Drži se u memoriji: kod restarta aplikacije ulogu
     /// ionako preuzima podsjetnik kod pokretanja.
@@ -62,6 +74,9 @@ final class TrackerEngine: ObservableObject {
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
+    /// Dan na koji engine otvara "Pregled dana" (kraj dana) — nakon zadnjeg prompta koji je
+    /// prenoćio to je jučer, ne današnji prazan dan. `SummaryView` ga preuzme i vrati na nil.
+    @Published var summaryDayRequest: Date?
 
     var interval: TimeInterval { TimeInterval(settings.intervalMinutes * 60) }
     var isPromptVisible: Bool { prompt.isVisible }
@@ -75,8 +90,14 @@ final class TrackerEngine: ObservableObject {
         let dnc = DistributedNotificationCenter.default()
         dnc.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                self?.isLocked = true
-                self?.lockedAt = Date()
+                guard let self else { return }
+                let now = Date()
+                self.isLocked = true
+                if let lastTickAt = self.lastTickAt, now.timeIntervalSince(lastTickAt) > self.lockTickGap {
+                    self.lockedAt = lastTickAt
+                } else {
+                    self.lockedAt = now
+                }
             }
         }
         dnc.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
@@ -133,6 +154,7 @@ final class TrackerEngine: ObservableObject {
         awaitingReturnSince = nil
         activePromptEnd = nil
         carriedSpans = []
+        pendingReturn = nil
         awaitingFinalAnswer = false
         nextPromptAt = alignedNextPrompt(after: now)
         autoStopWarningShown = false
@@ -163,6 +185,7 @@ final class TrackerEngine: ObservableObject {
         }
         prompt.close()
         activePromptEnd = nil
+        settlePendingReturn()
 
         let periodStart = lastCovered
         var periodEnd = endTime
@@ -173,7 +196,7 @@ final class TrackerEngine: ObservableObject {
             awaitingReturnSince = nil
             let pauseStart = max(gapStart, periodStart)
             if endTime > pauseStart {
-                entries.append(Entry(start: pauseStart, end: endTime, text: "Pauza (odsutnost)", kind: .pause))
+                record(start: pauseStart, end: endTime, text: "Pauza (odsutnost)", kind: .pause)
             }
             periodEnd = pauseStart
             lastCovered = max(lastCovered, endTime)
@@ -204,16 +227,20 @@ final class TrackerEngine: ObservableObject {
         isTracking = false
         awaitingFinalAnswer = false
         carriedSpans = []
+        pendingReturn = nil
         cancelAutoStop()
         nextPromptAt = nil
         sessionStart = nil
         awaitingReturnSince = nil
         persistDay()
+        summaryDayRequest = Fmt.dayKey.date(from: currentDayKey) ?? Date()
         openSummary()
     }
 
     func pause(minutes: Int?) {
-        guard isTracking, pauseUntil == nil else { return }
+        // Dok čeka zadnji odgovor dan je već zatvoren — pauza bi zatvorila zadnji prompt
+        // i ostavila `awaitingFinalAnswer` zauvijek uključen (tracking zaglavi).
+        guard isTracking, !awaitingFinalAnswer, pauseUntil == nil else { return }
         let now = Date()
         pausedSince = now
         if let minutes {
@@ -223,6 +250,7 @@ final class TrackerEngine: ObservableObject {
         }
         prompt.close()
         activePromptEnd = nil
+        settlePendingReturn()
         let hasPeriod = now.timeIntervalSince(lastCovered) > 60
         if hasPeriod || !carriedSpans.isEmpty {
             show(PromptRequest(
@@ -258,6 +286,13 @@ final class TrackerEngine: ObservableObject {
             note: "Ručni zapis — spremi period do sada, pa (ako želiš) upiši čime nastavljaš.",
             allowSnooze: false
         ))
+    }
+
+    /// Vraća zadnji prompt u prvi plan — "Završi dan" u meniju dok dan čeka zadnji odgovor.
+    func focusFinalPrompt() {
+        guard awaitingFinalAnswer, prompt.isVisible else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        prompt.focus()
     }
 
     /// Je li "Zapiši sada" trenutno smisleno (meni ga inače skriva).
@@ -338,13 +373,16 @@ final class TrackerEngine: ObservableObject {
         if dayKey == currentDayKey {
             apply(to: &entries)
             Store.saveDay(currentDayKey, entries: entries)
+            absorbManualEntries()
         } else {
             var day = Store.loadDay(dayKey)
             apply(to: &day)
             Store.saveDay(dayKey, entries: day)
             objectWillChange.send()
         }
-        if kind == .work, clean != row.text { pushHistory(clean) }
+        // Povijest (prefill idućeg prompta) prati samo tekući dan — ispravak jučerašnjeg
+        // unosa ne smije postati prijedlog za ono na čemu radiš sada.
+        if kind == .work, clean != row.text, dayKey == currentDayKey { pushHistory(clean) }
     }
 
     /// Ručno dodan unos iz kronološkog pregleda (npr. popunjavanje rupe). Preklopljeni
@@ -362,13 +400,14 @@ final class TrackerEngine: ObservableObject {
         if dayKey == currentDayKey {
             apply(to: &entries)
             Store.saveDay(currentDayKey, entries: entries)
+            absorbManualEntries()
         } else {
             var day = Store.loadDay(dayKey)
             apply(to: &day)
             Store.saveDay(dayKey, entries: day)
             objectWillChange.send()
         }
-        if kind == .work { pushHistory(clean) }
+        if kind == .work, dayKey == currentDayKey { pushHistory(clean) }
     }
 
     /// Sljedeći prompt poravnat s početkom sata (npr. 15 min → :00, :15, :30, :45).
@@ -424,7 +463,8 @@ final class TrackerEngine: ObservableObject {
     private func overnightCutoff(now: Date) -> Date? {
         guard Store.dayKey(now) != currentDayKey else { return nil }
         // Sesija koja legitimno prelazi u novi dan (start u 20:00 uz auto-stop u 16:00 →
-        // zaustavljanje je zakazano za sutra) se ne prekida.
+        // zaustavljanje je zakazano za sutra) se ne prekida — dok računalo radi; spavanje
+        // preko ponoći hvata `tick` (`sleepGap`).
         if settings.autoStopEnabled, let stopAt = autoStopAt, stopAt > now { return nil }
         guard let sessionDay = Fmt.dayKey.date(from: currentDayKey) else { return nil }
         let configured = Calendar.current.date(
@@ -541,6 +581,16 @@ final class TrackerEngine: ObservableObject {
         presentStartReminder(now: now)
     }
 
+    /// Otvoren podsjetnik s nadoknadom dobiva svježu ponudu početaka kad počne novi interval
+    /// — vidi `StartupReminderController.updateStartOptions`. Prenoćeni prozor nosi jučerašnji
+    /// naslov, pa ga se ne dira (zamijeni ga `checkWorkdayStart`).
+    private func refreshStartReminderOptions(now: Date) {
+        guard startupReminder.isVisible, startupReminder.shownBackfillFrom != nil,
+              let shownAt = startupReminder.shownAt,
+              Store.dayKey(shownAt) == Store.dayKey(now) else { return }
+        startupReminder.updateStartOptions(backfillOptions(now: now))
+    }
+
     /// Zajednički pop-up za oba podsjetnika (pokretanje aplikacije i početak radnog dana).
     private func presentStartReminder(now: Date) {
         // Podsjetnik prikazan prije početka radnog dana ne troši današnji termin — u
@@ -555,8 +605,18 @@ final class TrackerEngine: ObservableObject {
             // Ako je prozor prenoćio, odabrano vrijeme je jučerašnje — start() ga odbaci i
             // kreće od sada, pa dan nikad ne počne jučer.
             onStart: { [weak self] from in self?.start(from: from) },
-            onDismiss: {}
+            onDismiss: { [weak self] in self?.startReminderDismissed() }
         )
+    }
+
+    /// "Kasnije" — ako je radni dan već počeo, današnji podsjetnik je time odrađen. Inače bi
+    /// podsjetnik otvoren prije početka radnog dana (pokretanje u 7:50, radni dan u 8:00) i
+    /// odbijen nakon njega odmah iskočio opet, sa zvukom.
+    private func startReminderDismissed() {
+        let now = Date()
+        if let start = workdayStart(on: now), now >= start {
+            workdayReminderDayKey = Store.dayKey(now)
+        }
     }
 
     // MARK: - Nova verzija
@@ -628,11 +688,27 @@ final class TrackerEngine: ObservableObject {
 
     private func tick() {
         let now = Date()
+        let previousTick = lastTickAt
+        lastTickAt = now
         checkWorkdayStart(now: now)
+        refreshStartReminderOptions(now: now)
         checkForUpdateIfDue(now: now)
         showPendingUpdatePopup()
+        rollOverIdleDay(now: now)
         // Dan je zatvoren i čeka se odgovor na zadnji prompt — ništa se više ne zakazuje.
         guard isTracking, !awaitingFinalAnswer else { return }
+
+        // Sesija pokrenuta nakon vremena zaustavljanja (zaustavljanje je zakazano tek za
+        // neki od idućih dana) smije prijeći ponoć samo dok računalo radi. Ako je spavalo
+        // preko granice dana (poklopac zatvoren navečer), dan se zatvara u trenutku kad je
+        // zaspalo — inače bi cijela noć (i jutro do sutrašnjeg zaustavljanja) bila rad
+        // u jučerašnjem danu.
+        if let previousTick, now.timeIntervalSince(previousTick) >= sleepGap,
+           Store.dayKey(now) != currentDayKey,
+           let stopAt = autoStopAt, Store.dayKey(stopAt) != currentDayKey {
+            stop(at: max(previousTick, lastCovered))
+            return
+        }
 
         // Prije svega ostalog — auto-stop vrijedi i kad je pauzirano ili se čeka povratak.
         if settings.autoStopEnabled, let stopAt = autoStopAt {
@@ -668,7 +744,17 @@ final class TrackerEngine: ObservableObject {
             // Neodgovoren prompt "preživio" je granicu intervala — ne otvaramo drugi
             // prompt, nego produžimo period na postojećem (skupno vrijeme).
             if let next = nextPromptAt, now >= next, activePromptEnd != nil {
-                extendActivePrompt(to: next)
+                if let since = absenceStart(now: now) {
+                    // Korisnik je otišao od otvorenog prompta (npr. ručak) — odsutnost se ne
+                    // smije pripojiti periodu kao rad. Prompt se zatvori i čeka se povratak,
+                    // kao da je granica zatekla zaključan ekran: na povratku iskoči prompt do
+                    // početka odsutnosti, a odsutnost ide kao pauza.
+                    prompt.close()
+                    activePromptEnd = nil
+                    awaitingReturnSince = max(since, lastCovered)
+                } else {
+                    extendActivePrompt(to: next)
+                }
             }
             return
         }
@@ -677,17 +763,40 @@ final class TrackerEngine: ObservableObject {
         }
     }
 
-    private func attemptPrompt(now: Date) {
+    /// Bez trackanja "danas" prati sat — inače bi meni nakon ponoći pokazivao jučerašnje unose
+    /// sve do Starta. Sesija (i zadnji prompt koji još čeka odgovor) drži svoj dan do kraja.
+    private func rollOverIdleDay(now: Date) {
+        let today = Store.dayKey(now)
+        guard !isTracking, today != currentDayKey else { return }
+        currentDayKey = today
+        entries = Store.loadDay(today)
+    }
+
+    /// Početak odsutnosti ako korisnik trenutno nije za računalom (zaključan ekran ili idle
+    /// iznad praga, prema postavkama), inače nil.
+    private func absenceStart(now: Date) -> Date? {
+        if settings.lockPauseEnabled && isLocked { return lockedAt ?? now }
         let idle = IdleMonitor.idleSeconds()
-        if settings.lockPauseEnabled && isLocked {
-            awaitingReturnSince = max(lockedAt ?? now, lastCovered)
-        } else if settings.idleDetectionEnabled && idle >= TimeInterval(settings.idleThresholdMinutes * 60) {
-            awaitingReturnSince = max(now.addingTimeInterval(-idle), lastCovered)
+        if settings.idleDetectionEnabled && idle >= TimeInterval(settings.idleThresholdMinutes * 60) {
+            return now.addingTimeInterval(-idle)
+        }
+        return nil
+    }
+
+    private func attemptPrompt(now: Date) {
+        if let since = absenceStart(now: now) {
+            awaitingReturnSince = max(since, lastCovered)
         } else {
             // Kraj perioda je zakazano (poravnato) vrijeme prompta, ne trenutak odgovora —
             // tako su unosi uvijek točno na 5-min mreži, a kašnjenje odgovora se
             // prelijeva u sljedeći period.
             let end = nextPromptAt ?? now
+            // Ručni unos je pokrio (skoro) cijeli period — nema se što pitati, ostatak ide
+            // u period sljedeće granice.
+            if end.timeIntervalSince(lastCovered) < 60, carriedSpans.isEmpty {
+                nextPromptAt = alignedNextPrompt(after: end)
+                return
+            }
             activePromptEnd = end
             show(PromptRequest(
                 start: lastCovered,
@@ -711,16 +820,24 @@ final class TrackerEngine: ObservableObject {
         let gapMinutes = max(1, Int(now.timeIntervalSince(gapStart) / 60))
 
         if gapStart.timeIntervalSince(lastCovered) > 60 {
+            // Odsutnost se zapisuje odmah (pauza do povratka), a prompt pita samo za rad
+            // prije nje — vrijeme od povratka do odgovora je već novi period.
+            if now > gapStart {
+                record(start: gapStart, end: now, text: "Pauza (odsutnost)", kind: .pause)
+                persistDay()
+            }
+            let pending = PromptRequest.PendingPause(start: gapStart, end: max(now, gapStart))
+            pendingReturn = pending
             show(PromptRequest(
                 start: lastCovered,
                 end: gapStart,
-                pauseAfter: .init(start: gapStart, reason: "Pauza (odsutnost)"),
-                note: "Bio si odsutan ~\(gapMinutes) min — to razdoblje bit će označeno kao pauza.",
+                pauseAfter: pending,
+                note: "Bio si odsutan ~\(gapMinutes) min — to razdoblje je označeno kao pauza.",
                 allowSnooze: false
             ))
         } else {
             if now > gapStart {
-                entries.append(Entry(start: max(gapStart, lastCovered), end: now, text: "Pauza (odsutnost)", kind: .pause))
+                record(start: max(gapStart, lastCovered), end: now, text: "Pauza (odsutnost)", kind: .pause)
                 persistDay()
             }
             lastCovered = now
@@ -734,7 +851,7 @@ final class TrackerEngine: ObservableObject {
             // slijedi (pauza je između) — nosi se dalje kao zasebni red.
             carry(PromptSpan(start: lastCovered, end: since))
             if now > since {
-                entries.append(Entry(start: max(since, lastCovered), end: now, text: "Pauza", kind: .pause))
+                record(start: max(since, lastCovered), end: now, text: "Pauza", kind: .pause)
             }
         }
         pausedSince = nil
@@ -779,13 +896,57 @@ final class TrackerEngine: ObservableObject {
     }
 
     /// Doda preskočeni period u popis koji se nosi u sljedeći prompt; susjedni se spajaju.
+    /// Dio koji je u međuvremenu popunjen ručnim unosom se više ne pita.
     private func carry(_ span: PromptSpan) {
-        guard span.duration > 60 else { return }
-        if let last = carriedSpans.last, abs(span.start.timeIntervalSince(last.end)) <= 1 {
-            carriedSpans[carriedSpans.count - 1].end = max(last.end, span.end)
-        } else {
-            carriedSpans.append(span)
+        for part in Summarize.uncovered(entries, start: span.start, end: span.end)
+        where part.end.timeIntervalSince(part.start) > 60 {
+            if let last = carriedSpans.last, abs(part.start.timeIntervalSince(last.end)) <= 1 {
+                carriedSpans[carriedSpans.count - 1].end = max(last.end, part.end)
+            } else {
+                carriedSpans.append(PromptSpan(start: part.start, end: part.end))
+            }
         }
+    }
+
+    /// Automatski unos (odgovor na prompt, pauza, odsutnost) — upisuje se samo u vrijeme
+    /// koje još ne pokriva neki unos, pa ručni unos iz pregleda dana ima prednost.
+    private func record(start: Date, end: Date, text: String, kind: EntryKind) {
+        for part in Summarize.uncovered(entries, start: start, end: end)
+        where part.end.timeIntervalSince(part.start) > 5 {
+            entries.append(Entry(start: part.start, end: part.end, text: text, kind: kind))
+        }
+    }
+
+    /// Povratni prompt zatvoren je bez odgovora (Stop, Pauza, auto-stop). Pauza za odsutnost
+    /// je već zapisana; rad prije nje nosi se dalje kao zaseban red, a period kreće od
+    /// povratka — inače bi odsutnost završila u sljedećem promptu kao rad.
+    private func settlePendingReturn() {
+        guard let pending = pendingReturn else { return }
+        pendingReturn = nil
+        carry(PromptSpan(start: lastCovered, end: pending.start))
+        lastCovered = max(lastCovered, pending.end)
+    }
+
+    /// Nakon ručnog unosa/ispravka u današnjem danu: vrijeme koje je sad pokriveno ne
+    /// pita se ponovno. `lastCovered` preskoči unose koji se nastavljaju na njega (najviše
+    /// do sada), a preneseni preskočeni periodi se skrate za popunjeni dio.
+    private func absorbManualEntries() {
+        guard isTracking else { return }
+        let now = Date()
+        var advanced = true
+        while advanced {
+            advanced = false
+            for e in entries where e.start.timeIntervalSince(lastCovered) <= 1 {
+                let end = min(e.end, now)
+                if end > lastCovered {
+                    lastCovered = end
+                    advanced = true
+                }
+            }
+        }
+        let spans = carriedSpans
+        carriedSpans = []
+        spans.forEach(carry)
     }
 
     /// Segment bez teksta je **preskočen** — ne bilježi se. Ako je na kraju perioda,
@@ -815,7 +976,7 @@ final class TrackerEngine: ObservableObject {
             if texts[i].isEmpty {
                 if i <= lastFilled { carry(PromptSpan(start: seg.start, end: seg.end)) }
             } else {
-                entries.append(Entry(start: seg.start, end: seg.end, text: texts[i], kind: .work))
+                record(start: seg.start, end: seg.end, text: texts[i], kind: .work)
                 // Kronološki redoslijed → zadnji segment završi kao history.first (prefill za idući prompt).
                 pushHistory(texts[i])
             }
@@ -826,12 +987,13 @@ final class TrackerEngine: ObservableObject {
             pushHistory(nextUp)
         }
 
-        if let pending = request.pauseAfter, now > pending.start {
-            // Odsutnost ide u zapis kao pauza; preskočeni rad prije nje nije susjedan
-            // onome što slijedi, pa se nosi dalje zasebno.
+        if let pending = request.pauseAfter {
+            // Pauza za odsutnost je zapisana kod povratka; preskočeni rad prije nje nije
+            // susjedan onome što slijedi, pa se nosi dalje zasebno. Sljedeći period kreće od
+            // povratka.
+            pendingReturn = nil
             carry(PromptSpan(start: coveredEnd, end: min(pending.start, effectiveEnd ?? pending.start)))
-            entries.append(Entry(start: pending.start, end: now, text: pending.reason, kind: .pause))
-            lastCovered = max(lastCovered, now)
+            lastCovered = max(lastCovered, pending.end)
         } else {
             lastCovered = max(lastCovered, coveredEnd)
         }
@@ -933,6 +1095,7 @@ final class TrackerEngine: ObservableObject {
 
     var statusText: String {
         if !isTracking { return "Nije pokrenuto" }
+        if awaitingFinalAnswer { return "Kraj dana — čeka zadnji zapis" }
         if let until = pauseUntil {
             return until == .distantFuture
                 ? "Pauzirano do nastavka"

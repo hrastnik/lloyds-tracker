@@ -30,8 +30,28 @@ internal static class Brand
     // Fonts are built in PIXEL units at the system DPI (point size → px at Dpi) so that
     // text measurement (Font.Height, TextRenderer/Graphics.MeasureString) and rendering
     // agree exactly at any DPI. Call sites keep passing the same point sizes.
-    public static Font Ui(float size, FontStyle style = FontStyle.Regular) => new(UiFamily, size * Dpi / 72f, style, GraphicsUnit.Pixel);
-    public static Font Mono(float size, FontStyle style = FontStyle.Regular) => new(MonoFamily, size * Dpi / 72f, style, GraphicsUnit.Pixel);
+    //
+    // They are SHARED: one instance per (family, size, style) for the app's lifetime. A Control
+    // never disposes the Font assigned to it, and the popover, summary and prompt hints rebuild
+    // their controls on every change — new fonts each time would only pile up for the finalizer.
+    // So callers must never dispose a font they got from here.
+    public static Font Ui(float size, FontStyle style = FontStyle.Regular) => Cached(UiFamily, size, style);
+    public static Font Mono(float size, FontStyle style = FontStyle.Regular) => Cached(MonoFamily, size, style);
+
+    private static readonly Dictionary<(string Family, float Size, FontStyle Style), Font> Fonts = new();
+
+    private static Font Cached(string family, float size, FontStyle style)
+    {
+        lock (Fonts)
+        {
+            if (!Fonts.TryGetValue((family, size, style), out var font))
+            {
+                font = new Font(family, size * Dpi / 72f, style, GraphicsUnit.Pixel);
+                Fonts[(family, size, style)] = font;
+            }
+            return font;
+        }
+    }
 
     public static GraphicsPath RoundedRect(RectangleF r, float radius)
     {
@@ -49,6 +69,45 @@ internal static class Brand
         path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    /// <summary>How far an opaque child rectangle has to sit from the edge of a rounded card
+    /// (corner <paramref name="radius"/>, 1 px border drawn half a pixel in) so that its corners
+    /// stay inside the arc — otherwise it paints over the border and the rounded corners.</summary>
+    public static int CornerInset(float radius)
+        => (int)Math.Ceiling(radius + 0.5f - (radius - 0.5f) / MathF.Sqrt(2f));
+
+    /// <summary>Window shape for the borderless pop-ups. The path is only needed to build the
+    /// Region, so it's disposed here; the Region setter disposes the previous Region itself.</summary>
+    public static Region RoundedRegion(Size size, float radius)
+    {
+        using var path = RoundedRect(new RectangleF(0, 0, size.Width, size.Height), radius);
+        return new Region(path);
+    }
+
+    /// <summary>Keyboard focus ring for the hand-drawn buttons: a rounded outline just inside
+    /// the control's edge. Callers draw it only when <c>Focused &amp;&amp; ShowFocusCues</c> — so it
+    /// shows up once you navigate with Tab, not after a mouse click.</summary>
+    public static void FocusRing(Graphics g, Size size, float radius, Color color)
+    {
+        float w = Sf(1.5f);
+        float inset = Sf(2f);
+        var r = new RectangleF(inset, inset, size.Width - inset * 2, size.Height - inset * 2);
+        if (r.Width <= 0 || r.Height <= 0) return;
+        var smoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = RoundedRect(r, Math.Max(0, radius - inset));
+        using var pen = new Pen(color, w);
+        g.DrawPath(pen, path);
+        g.SmoothingMode = smoothing;
+    }
+
+    /// <summary>The date at the right of the "LLOYDS TRACKER" header steps its font down when
+    /// it would run into "TRACKER" ("ponedjeljak, 26.10.2026." is the longest) — macOS:
+    /// <c>minimumScaleFactor</c>.</summary>
+    public static void FitDayTitle(Label day, int room)
+    {
+        if (day.PreferredWidth > room) day.Font = Ui(7f);
     }
 
     public static void EnableCrispText(Graphics g)
@@ -143,6 +202,9 @@ internal sealed class TrackedLabel : Control
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.SupportsTransparentBackColor, true);
+        // Decoration only — no Tab stop (otherwise Tab stops on "OD"/"DO", "LLOYDS"…).
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         BackColor = Color.Transparent;
         AutoSize = false;
     }
@@ -215,6 +277,17 @@ internal sealed class FlatButton : Control
     /// koja inače nema podlogu).</summary>
     public Color? HoverFill { get; set; }
 
+    /// <summary>Width of <paramref name="text"/> as <see cref="OnPaint"/> draws it (GDI+
+    /// <c>MeasureString</c>, ClearType grid-fit). Size buttons with this, not
+    /// <c>TextRenderer.MeasureText</c> — GDI measures narrower and the text gets clipped.</summary>
+    public static int TextWidth(string text, Font font)
+    {
+        using var bmp = new Bitmap(1, 1);
+        using var g = Graphics.FromImage(bmp);
+        Brand.EnableCrispText(g);
+        return (int)Math.Ceiling(g.MeasureString(text, font).Width);
+    }
+
     private bool _hover;
     private bool _down;
 
@@ -235,15 +308,77 @@ internal sealed class FlatButton : Control
     public FlatButton()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        // Svaki klik je Click — inače drugi brzi klik (strelice ◀ ▶, +5 min…) postane
+        // DoubleClick i izgubi se.
+        SetStyle(ControlStyles.StandardDoubleClick, false);
         Cursor = Cursors.Hand;
         Font = Brand.Ui(9.5f, FontStyle.Bold);
         BackColor = Palette.Black;
+    }
+
+    /// <summary>Gets Tab focus and reacts to Enter/Space like a real Button (default). Pop-ups
+    /// that appear on their own (prompt, reminder, auto-stop, update) turn it off: they take the
+    /// keyboard while you may still be typing elsewhere, and a stray Space/Enter must not press
+    /// "Start" or "+30 min" for you.</summary>
+    public bool Focusable
+    {
+        get => GetStyle(ControlStyles.Selectable);
+        set { SetStyle(ControlStyles.Selectable, value); TabStop = value; }
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hover = false; _down = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
+
+    // MARK: - Keyboard (Enter clicks on press, Space on release — like a Win32 button)
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        // SuppressKeyPress: the click may move focus into a text field (e.g. "Dodaj unos" opens
+        // the editor) — the Enter/Space character must not land there.
+        if (e.Modifiers == Keys.None && e.KeyCode == Keys.Enter)
+        {
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            OnClick(EventArgs.Empty);
+            return;
+        }
+        if (e.Modifiers == Keys.None && e.KeyCode == Keys.Space)
+        {
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            _down = true;
+            Invalidate();
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Space && _down)
+        {
+            e.Handled = true;
+            _down = false;
+            Invalidate();
+            OnClick(EventArgs.Empty);
+            return;
+        }
+        base.OnKeyUp(e);
+    }
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { _down = false; Invalidate(); base.OnLostFocus(e); }
+    protected override void OnChangeUICues(UICuesEventArgs e) { Invalidate(); base.OnChangeUICues(e); }
+
+    // Gumb onemogućen ispod miša (▶ na zadnjem izboru / na današnjem danu) ne dobije
+    // MouseLeave — bez ovoga bi ostao obojan kao da je miš na njemu.
+    protected override void OnEnabledChanged(EventArgs e)
+    {
+        if (!Enabled) { _hover = false; _down = false; }
+        Invalidate();
+        base.OnEnabledChanged(e);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -254,11 +389,12 @@ internal sealed class FlatButton : Control
         var r = new RectangleF(BorderWidth / 2f, BorderWidth / 2f, Width - BorderWidth, Height - BorderWidth);
         using var path = Brand.RoundedRect(r, Brand.Sf(CornerRadius));
 
-        var fill = _hover && HoverFill is Color hoverFill ? hoverFill : Fill;
+        bool hover = _hover && Enabled;
+        var fill = hover && HoverFill is Color hoverFill ? hoverFill : Fill;
         if (fill.A > 0)
         {
-            if (_down) fill = Pressed(fill);
-            else if (_hover && HoverFill == null) fill = Hovered(fill);
+            if (_down && Enabled) fill = Pressed(fill);
+            else if (hover && HoverFill == null) fill = Hovered(fill);
             using var b = new SolidBrush(fill);
             g.FillPath(b, path);
         }
@@ -267,9 +403,12 @@ internal sealed class FlatButton : Control
             using var pen = new Pen(BorderColor, BorderWidth);
             g.DrawPath(pen, path);
         }
+        // Opaque fill (yellow Start/Spremi) gets a dark ring inside it, everything else a yellow one.
+        if (Focused && ShowFocusCues)
+            Brand.FocusRing(g, ClientSize, Brand.Sf(CornerRadius), fill.A == 255 ? Palette.Black : Palette.Yellow);
 
         // Icon + text, centered as a group.
-        var textColor = _hover && fill.A == 0 ? ControlPaint.Light(TextColor, 0.3f) : TextColor;
+        var textColor = hover && fill.A == 0 ? ControlPaint.Light(TextColor, 0.3f) : TextColor;
         var font = Font;
 
         // Two-line variant: main text over a smaller sub-line, both centered.
@@ -312,10 +451,11 @@ internal sealed class FlatButton : Control
 }
 
 /// <summary>Lets a borderless form be dragged by clicking anywhere on the given control
-/// (mirrors NSWindow.isMovableByWindowBackground).</summary>
+/// (mirrors NSWindow.isMovableByWindowBackground). <paramref name="onMoved"/> runs after every
+/// drag step — for a form that lays itself out again later and must stay where it was dropped.</summary>
 internal static class FormDrag
 {
-    public static void Enable(Form form, Control surface)
+    public static void Enable(Form form, Control surface, Action? onMoved = null)
     {
         Point offset = Point.Empty;
         bool dragging = false;
@@ -325,8 +465,9 @@ internal static class FormDrag
         };
         surface.MouseMove += (_, e) =>
         {
-            if (dragging)
-                form.Location = new Point(form.Location.X + e.X - offset.X, form.Location.Y + e.Y - offset.Y);
+            if (!dragging) return;
+            form.Location = new Point(form.Location.X + e.X - offset.X, form.Location.Y + e.Y - offset.Y);
+            onMoved?.Invoke();
         };
         surface.MouseUp += (_, _) => dragging = false;
     }
@@ -340,6 +481,8 @@ internal sealed class Dot : Control
     public Dot()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -358,6 +501,8 @@ internal sealed class KeyChip : Control
     public KeyChip(string text, Color bg, Color fg)
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         Text = text;
         BackColor = bg;
         ForeColor = fg;
@@ -440,8 +585,44 @@ internal static class Dark
         };
         combo.Items.AddRange(items.Cast<object>().ToArray());
         combo.DrawItem += DrawComboItem;
+        // Windows sends the wheel to the control under the mouse — scrolling the summary or
+        // Postavke over a closed drop-down would change its value along the way. Closed, it
+        // scrolls the surrounding page instead; open, the list scrolls as usual.
+        combo.MouseWheel += (_, e) =>
+        {
+            if (combo.DroppedDown || e is not HandledMouseEventArgs handled) return;
+            handled.Handled = true;
+            ScrollAncestor(combo, e.Delta);
+        };
         if (selectedIndex >= 0 && selectedIndex < items.Length) combo.SelectedIndex = selectedIndex;
         return combo;
+    }
+
+    /// <summary>Width that fits the longest item (plus the list's scrollbar), at least the
+    /// combo's own width and at most <paramref name="max"/>; longer items end in "…".</summary>
+    public static int DropDownWidthFor(ComboBox combo, int max)
+    {
+        int widest = 0;
+        foreach (var item in combo.Items)
+            widest = Math.Max(widest, TextRenderer.MeasureText(item?.ToString() ?? "", combo.Font).Width);
+        int width = widest + Brand.S(12) + SystemInformation.VerticalScrollBarWidth;
+        return Math.Clamp(width, combo.Width, Math.Max(combo.Width, max));
+    }
+
+    /// <summary>Scrolls the nearest auto-scrolling ancestor by one wheel step (as many lines as
+    /// the system wheel setting says, or a page).</summary>
+    private static void ScrollAncestor(Control control, int delta)
+    {
+        for (var c = control.Parent; c != null; c = c.Parent)
+        {
+            if (c is not ScrollableControl { AutoScroll: true } sc || !sc.VerticalScroll.Visible) continue;
+            int lines = SystemInformation.MouseWheelScrollLines;
+            int step = lines > 0 ? lines * control.Font.Height : sc.ClientSize.Height;
+            var pos = sc.AutoScrollPosition; // negative offsets
+            int y = Math.Max(0, -pos.Y - delta * step / 120);
+            sc.AutoScrollPosition = new Point(-pos.X, y);
+            return;
+        }
     }
 
     private static void DrawComboItem(object? sender, DrawItemEventArgs e)
@@ -451,6 +632,6 @@ internal static class Dark
         using var back = new SolidBrush(selected ? Palette.Yellow.With(0.25) : Palette.White.OverBlack(0.1));
         e.Graphics.FillRectangle(back, e.Bounds);
         TextRenderer.DrawText(e.Graphics, combo.Items[e.Index]?.ToString() ?? "", combo.Font, e.Bounds, Palette.White,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
     }
 }

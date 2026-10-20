@@ -52,7 +52,7 @@ internal sealed class PromptController
         if (_form is { IsDisposed: false } f)
         {
             _form = null;
-            f.Close();
+            f.CloseQuietly();
             f.Dispose();
         }
         else
@@ -86,6 +86,10 @@ internal sealed class PromptTextField : Control
         Key = key;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint
                  | ControlStyles.ResizeRedraw, true);
+        // Only the inner TextBox takes focus — the wrapper would otherwise be an invisible Tab
+        // stop in front of every field.
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         BackColor = Palette.Black;
 
         int pad = Brand.S(big ? 14 : 10);
@@ -160,6 +164,13 @@ internal sealed class PromptTextField : Control
         }
     }
 
+    /// <summary>A click on the field's padding (around the TextBox) focuses the TextBox.</summary>
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left) FocusBox();
+        base.OnMouseDown(e);
+    }
+
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
@@ -216,11 +227,15 @@ internal sealed class PromptForm : Form
     private TrackedLabel? _periodSectionLabel;
     private PromptTextField? _nextUpField;
     private CardPanel? _cardPanel;    // fullscreen only
+    /// <summary>Distance of the stack from the panel/card edge — see <see cref="Brand.CornerInset"/>.</summary>
+    private int _stackInset;
     private Panel? _logoRow;          // fullscreen only
     private Label? _fullscreenHint;   // fullscreen only
     private readonly List<PromptTextField> _fields = new();
     private readonly List<PromptTextField> _carriedFields = new();
 
+    /// <summary>Where the floating panel is anchored (top-right corner) — the first layout puts it
+    /// in the corner of the screen, a drag moves it, and every relayout (extend, ✂) keeps it there.</summary>
     private int _floatRight;
     private int _floatTop;
 
@@ -251,7 +266,7 @@ internal sealed class PromptForm : Form
 
         _periodStart = request.Start;
         _periodEnd = Max(request.End ?? DateTime.Now, _periodStart);
-        _boundaries = PromptGeometry.GridBoundaries(_periodStart, _periodEnd);
+        _boundaries = PromptGeometry.Boundaries(_periodStart, _periodEnd, _splitPoints);
         // Pre-fill dobiva samo glavni period; preskočeni redovi ostaju prazni jer su svjesno
         // ostavljeni za kasnije — Enter ih ne smije napuniti zadnjim unosom.
         _texts[_periodStart] = Prefill;
@@ -309,7 +324,7 @@ internal sealed class PromptForm : Form
         AddRow(BuildHeaderRow(), first: true);
 
         if (!string.IsNullOrEmpty(_request.Note))
-            AddRow(WrappedLabel(_request.Note!, Brand.Ui(_big ? 10.5f : 9f), Palette.Yellow.With(0.9), _interior, _innerW));
+            AddRow(WrappedLabel(_request.Note!, Brand.Ui(_big ? 10.5f : 9f), Palette.Yellow.Over(_interior, 0.9), _interior, _innerW));
 
         if (Carried.Count > 0)
             AddRow(BuildCarriedPanel());
@@ -498,7 +513,7 @@ internal sealed class PromptForm : Form
             AutoSize = true,
             Text = "Sljedeći prompt kreće s ovim opisom.",
             Font = Brand.Ui(8f),
-            ForeColor = Palette.Gray.With(0.5),
+            ForeColor = Palette.Gray.Over(_interior, 0.5),
             BackColor = _interior,
             Margin = new Padding(0, Brand.S(6), 0, 0),
         };
@@ -552,7 +567,7 @@ internal sealed class PromptForm : Form
             AutoSize = false,
             Text = (carried ? "↩ " : "") + $"{Fmt.Hhmm(start)}–{Fmt.Hhmm(end)}",
             Font = Brand.Mono(_big ? 9.5f : 8f, FontStyle.Bold),
-            ForeColor = carried ? Palette.Gray.With(0.55) : Palette.Gray,
+            ForeColor = carried ? Palette.Gray.Over(_interior, 0.55) : Palette.Gray,
             BackColor = _interior,
             Width = labelW,
             Height = field.Height,
@@ -631,6 +646,8 @@ internal sealed class PromptForm : Form
     private void RebuildHints(bool single)
     {
         _hintsPanel.SuspendLayout();
+        // Rebuilt on every ✂ / extension — Clear() alone would leave the old chips alive.
+        foreach (Control c in _hintsPanel.Controls.Cast<Control>().ToList()) c.Dispose();
         _hintsPanel.Controls.Clear();
 
         int x = 0;
@@ -671,10 +688,12 @@ internal sealed class PromptForm : Form
     private void BuildActions()
     {
         _actionsPanel.SuspendLayout();
+        foreach (Control c in _actionsPanel.Controls.Cast<Control>().ToList()) c.Dispose();
         _actionsPanel.Controls.Clear();
 
         var skip = new FlatButton
         {
+            Focusable = false,
             Text = "Preskoči",
             TextColor = Palette.Gray,
             Fill = Color.Transparent,
@@ -695,6 +714,7 @@ internal sealed class PromptForm : Form
         {
             var snooze = new FlatButton
             {
+                Focusable = false,
                 Text = "Odgodi 5 min",
                 TextColor = Palette.Gray,
                 Fill = Color.Transparent,
@@ -721,6 +741,9 @@ internal sealed class PromptForm : Form
         if (_splitPoints.Contains(b))
         {
             _splitPoints.Remove(b);
+            // A split kept from before a grid thinning disappears together with its handle.
+            _boundaries = PromptGeometry.Boundaries(_periodStart, _periodEnd, _splitPoints);
+            if (_blockBar != null) { _blockBar.Boundaries = _boundaries; _blockBar.Invalidate(); }
             var segs = Segments();
             DateTime target = _periodStart;
             foreach (var s in segs) if (s.Start <= b) target = s.Start;
@@ -813,13 +836,49 @@ internal sealed class PromptForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    /// <summary>The controller closes the form itself (after an answer, or when the engine
+    /// closes the prompt) — that close must not count as the user's.</summary>
+    private bool _closingQuietly;
+    private bool _skipQueued;
+
+    public void CloseQuietly()
+    {
+        _closingQuietly = true;
+        Close();
+    }
+
+    /// <summary>Alt+F4 (or closing from the taskbar) is the same as Preskoči — otherwise the
+    /// engine would never get an answer, and with the final prompt the day would stay stuck
+    /// waiting for one.</summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!_closingQuietly && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            // Deferred: the controller closes the form in response, and that must not happen
+            // inside this very FormClosing. A second Alt+F4 before then (or an answer that
+            // closed the form meanwhile) must not skip twice.
+            if (!_skipQueued)
+            {
+                _skipQueued = true;
+                BeginInvoke(new Action(() => { if (!_closingQuietly && !IsDisposed) Skip(); }));
+            }
+        }
+        base.OnFormClosing(e);
+    }
+
     // MARK: - Floating chrome
 
     private void BuildFloatingChrome()
     {
-        _stack.Location = new Point(1, 1); // 1px frame so the yellow hairline border shows
+        // The stack is as opaque as the panel: inset into the corner arcs so the yellow hairline
+        // shows all the way round. Its padding shrinks by as much, so the content stays _pad + 1
+        // from the edge (1px frame + padding) and the panel keeps its size.
+        _stackInset = Brand.CornerInset(Brand.Sf(16));
+        _stack.Padding = new Padding(_pad + 1 - _stackInset);
+        _stack.Location = new Point(_stackInset, _stackInset);
         Controls.Add(_stack);
-        FormDrag.Enable(this, _stack);
+        FormDrag.Enable(this, _stack, onMoved: () => { _floatRight = Right; _floatTop = Top; });
     }
 
     // MARK: - Fullscreen chrome
@@ -835,7 +894,11 @@ internal sealed class PromptForm : Form
             Radius = 20,
             AutoSize = false,
         };
-        _stack.Location = Point.Empty;
+        // Same colour as the card — inset so it doesn't cover the card's border and corners
+        // (padding shrinks by as much; the card keeps its size).
+        _stackInset = Brand.CornerInset(Brand.Sf(_cardPanel.Radius));
+        _stack.Padding = new Padding(_pad - _stackInset);
+        _stack.Location = new Point(_stackInset, _stackInset);
         _cardPanel.Controls.Add(_stack);
         Controls.Add(_cardPanel);
 
@@ -860,7 +923,7 @@ internal sealed class PromptForm : Form
             AutoSize = true,
             Text = "Upiši što radiš i stisni Enter — ili preskoči (Esc), pa te period čeka u sljedećem promptu.",
             Font = Brand.Ui(9.5f),
-            ForeColor = Palette.Gray.With(0.7),
+            ForeColor = Palette.Gray.OverBlack(0.7),
             BackColor = Palette.Black,
         };
         Controls.Add(_fullscreenHint);
@@ -878,7 +941,7 @@ internal sealed class PromptForm : Form
     private void LayoutFloating()
     {
         var size = _stack.PreferredSize;
-        ClientSize = new Size(size.Width + 2, size.Height + 2);
+        ClientSize = new Size(size.Width + _stackInset * 2, size.Height + _stackInset * 2);
 
         if (_floatRight == 0)
         {
@@ -889,14 +952,15 @@ internal sealed class PromptForm : Form
         Left = _floatRight - Width;
         Top = _floatTop;
 
-        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
+        Region = Brand.RoundedRegion(Size, Brand.Sf(16));
     }
 
     private void LayoutFullscreen()
     {
         if (_cardPanel == null || _logoRow == null || _fullscreenHint == null) return;
 
-        _cardPanel.Size = _stack.PreferredSize;
+        var stackSize = _stack.PreferredSize;
+        _cardPanel.Size = new Size(stackSize.Width + _stackInset * 2, stackSize.Height + _stackInset * 2);
 
         int spacing = Brand.S(28);
         int totalH = _logoRow.Height + spacing + _cardPanel.Height + spacing + _fullscreenHint.Height;
@@ -993,7 +1057,7 @@ internal sealed class PromptForm : Form
             ? (_fields.FirstOrDefault(f => f.ContainsFocus)?.Key ?? _periodStart)
             : null;
         _periodEnd = newEnd;
-        _boundaries = PromptGeometry.GridBoundaries(_periodStart, _periodEnd);
+        _boundaries = PromptGeometry.Boundaries(_periodStart, _periodEnd, _splitPoints);
 
         if (_timeLabel != null)
         {

@@ -42,10 +42,14 @@ struct MenuBarView: View {
                 .font(.system(size: 13, weight: .light))
                 .tracking(2)
                 .foregroundStyle(Color.lloydsGray)
-            Spacer()
+            // "ponedjeljak, 26.10.2026." je najduži naslov (338 pt uz Spacer bez minimuma, meni
+            // ima 340) — sa zadanim razmakom Spacera se lomio u dva reda.
+            Spacer(minLength: 0)
             Text(Fmt.dayTitle.string(from: Date()))
                 .font(.system(size: 10))
                 .foregroundStyle(Color.lloydsGray.opacity(0.7))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -85,7 +89,9 @@ struct MenuBarView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
-                if engine.isTracking, engine.pauseUntil == nil, let next = engine.nextPromptAt {
+                // Dok se čeka povratak granica je već prošla — bez `canPromptNow` bi tu
+                // stajalo "prompt za 00:00", a prompt dolazi tek kad se vratiš.
+                if engine.canPromptNow, let next = engine.nextPromptAt {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text("prompt za \(Fmt.countdown(next.timeIntervalSince(context.date)))")
                             .font(.system(size: 11, design: .monospaced))
@@ -133,14 +139,43 @@ struct MenuBarView: View {
                 .help("Zapiši period do sada i (ako želiš) reci čime nastavljaš")
             }
 
-            if engine.isTracking {
+            if engine.awaitingFinalAnswer {
+                // Dan je zatvoren, a zadnji prompt čeka odgovor — pauza/stop tu nemaju
+                // smisla, pa nudimo samo povratak na taj prompt.
+                Button {
+                    dismissMenu()
+                    engine.focusFinalPrompt()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Otvori zadnji zapis")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .foregroundStyle(Color.lloydsYellow)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.lloydsYellow.opacity(0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.lloydsYellow.opacity(0.5), lineWidth: 1)
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Dan je završen — zapiši zadnji period da se dan zatvori")
+            } else if engine.isTracking {
                 HStack(spacing: 8) {
                     if engine.pauseUntil == nil {
+                        // Pauza i "Završi dan" zatvaraju meni kao "Zapiši sada" (i kao na
+                        // Windowsima/Linuxu); Start/Nastavi ga ostave otvorenog s novim stanjem.
                         Menu {
-                            Button("15 minuta") { engine.pause(minutes: 15) }
-                            Button("30 minuta") { engine.pause(minutes: 30) }
-                            Button("1 sat") { engine.pause(minutes: 60) }
-                            Button("Do nastavka") { engine.pause(minutes: nil) }
+                            Button("15 minuta") { pauseAndDismiss(15) }
+                            Button("30 minuta") { pauseAndDismiss(30) }
+                            Button("1 sat") { pauseAndDismiss(60) }
+                            Button("Do nastavka") { pauseAndDismiss(nil) }
                         } label: {
                             Label("Pauziraj", systemImage: "pause.fill")
                                 .font(.system(size: 12, weight: .semibold))
@@ -158,6 +193,8 @@ struct MenuBarView: View {
                     }
                     Spacer()
                     Button {
+                        // Stop može otvoriti zadnji prompt — ne smije iskočiti ispod menija.
+                        dismissMenu()
                         engine.stop()
                     } label: {
                         pillLabel("Završi dan", systemImage: "stop.fill", color: stopRed)
@@ -186,6 +223,11 @@ struct MenuBarView: View {
     }
 
     private let stopRed = Color(red: 1.0, green: 0.36, blue: 0.31)
+
+    private func pauseAndDismiss(_ minutes: Int?) {
+        dismissMenu()
+        engine.pause(minutes: minutes)
+    }
 
     /// Zatvara popover iz status bara. MenuBarExtra u `.window` stilu nema dismiss API,
     /// a popover je key window — pa ga zatvaramo izravno. Naslovnu traku imaju samo
@@ -220,6 +262,7 @@ struct MenuBarView: View {
 
     private var statusColor: Color {
         if !engine.isTracking { return Color.lloydsGray.opacity(0.5) }
+        if engine.awaitingFinalAnswer { return Color.lloydsGray }
         if engine.pauseUntil != nil { return .orange }
         if engine.awaitingReturnSince != nil { return .blue }
         return Color.lloydsYellow
@@ -256,6 +299,7 @@ struct MenuBarView: View {
                     if hidden > 0 {
                         Button {
                             NSApp.activate(ignoringOtherApps: true)
+                            engine.summaryDayRequest = nil
                             openWindow(id: "summary")
                         } label: {
                             Text("… i još \(hidden) ranijih — Pregled dana")
@@ -296,6 +340,8 @@ struct MenuBarView: View {
         HStack {
             footerLink("Pregled dana") {
                 NSApp.activate(ignoringOtherApps: true)
+                // Ručno otvaranje ne preuzima zahtjev kraja dana koji nitko nije otvorio.
+                engine.summaryDayRequest = nil
                 openWindow(id: "summary")
             }
             Spacer()

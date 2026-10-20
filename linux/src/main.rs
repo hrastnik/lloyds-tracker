@@ -48,6 +48,9 @@ const APP_ID: &str = "com.lloydsdigital.LloydsTracker";
 pub struct App {
     pub gtk: Application,
     pub engine: RefCell<TrackerEngine>,
+    /// Drži aplikaciju živom bez otvorenog prozora — traka je jedini UI, a bez SNI hosta
+    /// nema ni nje (pa ni kanala naredbi), a promptovi i podsjetnici i dalje moraju raditi.
+    hold: RefCell<Option<gtk4::gio::ApplicationHoldGuard>>,
 
     tray: RefCell<Option<Handle<LloydsTray>>>,
     last_snapshot: RefCell<Option<TraySnapshot>>,
@@ -65,6 +68,7 @@ impl App {
         Rc::new(App {
             gtk: gtk.clone(),
             engine: RefCell::new(TrackerEngine::new()),
+            hold: RefCell::new(None),
             tray: RefCell::new(None),
             last_snapshot: RefCell::new(None),
             prompt: RefCell::new(None),
@@ -169,6 +173,12 @@ impl App {
                     window.close();
                 }
             }
+            Effect::UpdateStartupReminderOptions(options) => {
+                let window = self.reminder.borrow().clone();
+                if let Some(window) = window {
+                    window.update_start_options(options);
+                }
+            }
             Effect::ShowAutoStopWarning { stop_at, lead } => {
                 if let Some(old) = self.auto_stop.borrow_mut().take() {
                     old.close();
@@ -214,7 +224,7 @@ impl App {
                 }
             }
             Effect::OpenUpdatePage(url) => UpdateChecker::open_page(&url),
-            Effect::OpenSummary => self.open_summary(),
+            Effect::OpenSummary(day) => self.open_summary(Some(day)),
             Effect::PlaySound => sound::play_prompt_sound(),
         }
     }
@@ -243,11 +253,21 @@ impl App {
 
     // MARK: - Prozori
 
-    fn open_summary(self: &Rc<Self>) {
+    /// `day` — dan koji treba pokazati (kraj dana ga otvara na dan koji je upravo zatvoren, i
+    /// kad je prozor već otvoren); iz menija otvoren prozor ostaje na svom danu.
+    fn open_summary(self: &Rc<Self>, day: Option<DateTime<Local>>) {
         let existing = self.summary.borrow().clone();
         match existing {
-            Some(window) => window.present(),
-            None => *self.summary.borrow_mut() = Some(SummaryWindow::new(self)),
+            Some(window) => {
+                if let Some(day) = day {
+                    window.show_day(day);
+                }
+                window.present();
+            }
+            None => {
+                let window = SummaryWindow::new(self, day.unwrap_or_else(Local::now));
+                *self.summary.borrow_mut() = Some(window);
+            }
         }
     }
 
@@ -302,8 +322,9 @@ impl App {
             TrayCommand::Pause(minutes) => self.clone().mutate(|engine| engine.pause(minutes)),
             TrayCommand::Resume => self.clone().mutate(|engine| engine.resume()),
             TrayCommand::PromptNow => self.clone().mutate(|engine| engine.manual_prompt()),
+            TrayCommand::FocusFinalPrompt => self.clone().mutate(|engine| engine.focus_final_prompt()),
             TrayCommand::Stop => self.clone().mutate(|engine| engine.stop()),
-            TrayCommand::OpenSummary => self.open_summary(),
+            TrayCommand::OpenSummary => self.open_summary(None),
             TrayCommand::OpenSettings => self.open_settings(),
             TrayCommand::OpenUpdatePage => self.clone().mutate(|engine| engine.open_update_page()),
             TrayCommand::Quit => self.gtk.quit(),
@@ -324,7 +345,7 @@ fn main() -> glib::ExitCode {
     gtk.connect_activate(move |gtk| {
         // Drugo pokretanje samo probudi postojeću instancu (GTK ga sam preusmjeri ovamo).
         if let Some(app) = app_cell.borrow().as_ref() {
-            app.open_summary();
+            app.open_summary(None);
             return;
         }
         let app = App::new(gtk);
@@ -336,8 +357,10 @@ fn main() -> glib::ExitCode {
 }
 
 fn start(app: Rc<App>) {
-    // Bez otvorenog prozora GTK bi aplikaciju odmah ugasio; traka je ovdje jedini UI.
-    let hold = app.gtk.hold();
+    // Bez otvorenog prozora GTK bi aplikaciju odmah ugasio; traka je ovdje jedini UI. Hold
+    // živi u `App`, a ne u petlji naredbi iz trake — kad traka ne uspije, kanal se zatvori
+    // i petlja završi, a aplikacija mora ostati (promptovi, podsjetnici, auto-stop).
+    *app.hold.borrow_mut() = Some(app.gtk.hold());
 
     // MARK: Traka
     let (tx, rx) = async_channel::unbounded::<TrayCommand>();
@@ -354,7 +377,6 @@ fn start(app: Rc<App>) {
     {
         let app = app.clone();
         glib::spawn_future_local(async move {
-            let _hold = hold;
             while let Ok(command) = rx.recv().await {
                 app.handle_command(command);
             }
@@ -374,6 +396,11 @@ fn start(app: Rc<App>) {
 }
 
 fn install_css() {
+    // Sve je na crnoj podlozi. Ono što naš CSS ne pokriva (dijalog za export CSV-a, kontekstni
+    // meni polja za tekst) neka bude iz tamne varijante teme, ako je tema ima.
+    if let Some(settings) = gtk4::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(true);
+    }
     let provider = CssProvider::new();
     provider.load_from_data(&theme::css());
     if let Some(display) = Display::default() {

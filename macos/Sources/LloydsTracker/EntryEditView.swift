@@ -14,15 +14,21 @@ struct EntryDraft: Equatable {
     var start: String
     var end: String
     var kind: EntryKind
+    /// Točna vremena s kojima je uređivač otvoren (sa sekundama) — neizmijenjeno polje
+    /// vraća njih, a ne punu minutu (vidi `Fmt.editRange`).
+    var originalStart: Date
+    var originalEnd: Date
 
     static func edit(_ row: ChronoRow) -> EntryDraft {
         EntryDraft(target: .existing(row), text: row.text,
-                   start: Fmt.hhmm(row.start), end: Fmt.hhmm(row.end), kind: row.kind)
+                   start: Fmt.hhmm(row.start), end: Fmt.hhmm(row.end), kind: row.kind,
+                   originalStart: row.start, originalEnd: row.end)
     }
 
     static func new(start: Date, end: Date, gapStart: Date?) -> EntryDraft {
         EntryDraft(target: .new(gapStart: gapStart), text: "",
-                   start: Fmt.hhmm(start), end: Fmt.hhmm(end), kind: .work)
+                   start: Fmt.hhmm(start), end: Fmt.hhmm(end), kind: .work,
+                   originalStart: start, originalEnd: end)
     }
 
     var row: ChronoRow? {
@@ -50,19 +56,24 @@ struct EntryEditor: View {
 
     private var trimmed: String { draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    private func date(_ input: String) -> Date? {
-        Fmt.parseTime(input).map { Fmt.at(day, hour: $0.hour, minute: $0.minute) }
+    private var dates: (start: Date?, end: Date?) {
+        Fmt.editRange(start: draft.start, end: draft.end, day: day,
+                      original: (draft.originalStart, draft.originalEnd))
     }
 
-    private var startDate: Date? { date(draft.start) }
-    private var endDate: Date? { date(draft.end) }
+    private var startDate: Date? { dates.start }
+    private var endDate: Date? { dates.end }
 
     private var range: (start: Date, end: Date)? {
         guard let s = startDate, let e = endDate, e > s else { return nil }
         return (s, e)
     }
 
-    private var isValid: Bool { !trimmed.isEmpty && range != nil }
+    /// Unos ne smije završiti u budućnosti — sljedeći prompt bi inače pitao za vrijeme
+    /// koje je već "pokriveno" (i jedno od toga bi se izgubilo).
+    private var endsInFuture: Bool { (range?.end ?? .distantPast) > Date() }
+
+    private var isValid: Bool { !trimmed.isEmpty && range != nil && !endsInFuture }
 
     private var timesChanged: Bool {
         guard let row = draft.row else { return true }
@@ -79,13 +90,17 @@ struct EntryEditor: View {
     private var notice: (text: String, warn: Bool)? {
         if startDate == nil || endDate == nil { return ("Vrijeme upiši kao 9:30 ili 0930.", true) }
         if range == nil { return ("Kraj mora biti nakon početka.", true) }
+        if endsInFuture { return ("Kraj ne može biti u budućnosti (sad je \(Fmt.hhmm(Date()))).", true) }
         var parts: [String] = []
         if let row = draft.row, row.isMerged, timesChanged {
-            parts.append("Promjena vremena stapa \(row.ids.count) bloka u jedan unos.")
+            parts.append("Promjena vremena stapa \(Fmt.blocks(row.ids.count)) u jedan unos.")
         }
         let n = overlaps.count
         if n > 0 {
             parts.append("Preklapa se s \(n) \(n == 1 ? "unosom" : "unosa") — ovaj unos zamjenjuje preklopljeni dio.")
+        }
+        if let r = range, !Calendar.current.isDate(r.end.addingTimeInterval(-1), inSameDayAs: r.start) {
+            parts.append("Završava iza ponoći (\(Fmt.hhmm(r.end)) sutradan).")
         }
         return parts.isEmpty ? nil : (parts.joined(separator: " "), false)
     }
@@ -157,7 +172,7 @@ struct EntryEditor: View {
                         HStack(spacing: 5) {
                             Image(systemName: "trash")
                                 .font(.system(size: 10, weight: .bold))
-                            Text(draft.row?.isMerged == true ? "Obriši (\(draft.row!.ids.count) bloka)" : "Obriši")
+                            Text(draft.row?.isMerged == true ? "Obriši (\(Fmt.blocks(draft.row!.ids.count)))" : "Obriši")
                                 .font(.system(size: 12, weight: .semibold))
                         }
                         .foregroundStyle(Self.deleteRed)

@@ -80,11 +80,11 @@ internal sealed class UpdatePopupForm : Form
         y += body.Height + Brand.S(16);
 
         // The arrow stands in for the macOS arrow.down.circle.fill symbol.
-        var download = new FlatButton { Text = "↓  Preuzmi", Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
+        var download = new FlatButton { Focusable = false, Text = "↓  Preuzmi", Fill = Palette.Yellow, TextColor = Palette.Black, Font = Brand.Ui(10f, FontStyle.Bold), CornerRadius = 10, BackColor = Palette.Black, Size = new Size(innerW - Brand.S(96), Brand.S(40)), Location = new Point(pad, y) };
         download.Click += (_, _) => _onDownload();
         Controls.Add(download);
 
-        var later = new FlatButton { Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
+        var later = new FlatButton { Focusable = false, Text = "Kasnije", TextColor = Palette.Gray, BorderColor = Palette.White.OverBlack(0.2), BorderWidth = 1, CornerRadius = 10, Font = Brand.Ui(10f, FontStyle.Bold), BackColor = Palette.Black, Size = new Size(Brand.S(88), Brand.S(40)), Location = new Point(pad + innerW - Brand.S(88), y) };
         later.Click += (_, _) => _onDismiss();
         Controls.Add(later);
         y += Brand.S(40) + pad;
@@ -94,7 +94,7 @@ internal sealed class UpdatePopupForm : Form
         // Same corner as the startup reminder (top right, above other windows).
         var wa = PromptGeometry.PromptScreen().WorkingArea;
         Location = new Point(wa.Right - Width - Brand.S(24), wa.Top + Brand.S(24));
-        Region = new Region(Brand.RoundedRect(new RectangleF(0, 0, Width, Height), Brand.Sf(16)));
+        Region = Brand.RoundedRegion(Size, Brand.Sf(16));
     }
 
     /// <summary>The pop-up doesn't take the keyboard right away — see <see cref="PanelFade"/>.</summary>

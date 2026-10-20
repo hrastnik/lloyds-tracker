@@ -17,6 +17,8 @@ pub enum TrayCommand {
     Resume,
     /// "Zapiši sada" — ručni prompt za period do sada.
     PromptNow,
+    /// "Otvori zadnji zapis" — zadnji prompt u prvi plan dok dan čeka zadnji odgovor.
+    FocusFinalPrompt,
     Stop,
     OpenSummary,
     OpenSettings,
@@ -39,6 +41,7 @@ pub struct TraySnapshot {
     pub is_tracking: bool,
     pub is_paused: bool,
     pub can_prompt_now: bool,
+    pub awaiting_final_answer: bool,
     /// Novija verzija na GitHubu (None = nema je).
     pub update: Option<String>,
 }
@@ -61,6 +64,7 @@ impl TraySnapshot {
             next_prompt: engine
                 .is_tracking
                 .then_some(())
+                .and((!engine.awaiting_final_answer()).then_some(()))
                 .and(engine.pause_until.is_none().then_some(()))
                 .and(engine.next_prompt_at)
                 .map(|at| format!("Sljedeći prompt u {}", Fmt::hhmm(at))),
@@ -71,6 +75,7 @@ impl TraySnapshot {
             is_tracking: engine.is_tracking,
             is_paused: engine.pause_until.is_some(),
             can_prompt_now: engine.can_prompt_now(),
+            awaiting_final_answer: engine.awaiting_final_answer(),
             update: engine.available_update.as_ref().map(|u| u.version.clone()),
         }
     }
@@ -208,7 +213,11 @@ impl ksni::Tray for LloydsTray {
         if s.can_prompt_now {
             items.push(action("Zapiši sada", TrayCommand::PromptNow));
         }
-        if s.is_tracking {
+        if s.awaiting_final_answer {
+            // Dan je zatvoren, a zadnji prompt čeka odgovor — pauza/stop tu nemaju smisla,
+            // pa nudimo samo povratak na taj prompt.
+            items.push(action("Otvori zadnji zapis", TrayCommand::FocusFinalPrompt));
+        } else if s.is_tracking {
             if s.is_paused {
                 items.push(action("Nastavi", TrayCommand::Resume));
             } else {

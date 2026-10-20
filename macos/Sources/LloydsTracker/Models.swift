@@ -114,9 +114,11 @@ struct PromptSpan: Equatable {
 }
 
 struct PromptRequest {
+    /// Odsutnost iza perioda povratnog prompta — pauza je već zapisana, `end` je trenutak
+    /// povratka (od njega kreće sljedeći period, a ne od trenutka odgovora).
     struct PendingPause {
         var start: Date
-        var reason: String
+        var end: Date
     }
 
     var start: Date
@@ -222,15 +224,36 @@ enum Summarize {
         day = out
     }
 
+    /// Dijelovi `start…end` koje ne pokriva nijedan unos. Automatski unosi (odgovor na
+    /// prompt, pauza, odsutnost) pune samo njih — ručno dodan ili ispravljen unos iz
+    /// pregleda dana ima prednost i ništa se ne broji dvaput.
+    static func uncovered(_ entries: [Entry], start: Date, end: Date) -> [(start: Date, end: Date)] {
+        var parts: [(start: Date, end: Date)] = []
+        var cursor = start
+        for e in entries.sorted(by: { $0.start < $1.start }) where e.end > cursor && e.start < end {
+            if e.start > cursor { parts.append((cursor, e.start)) }
+            cursor = max(cursor, e.end)
+            if cursor >= end { break }
+        }
+        if cursor < end { parts.append((cursor, end)) }
+        return parts
+    }
+
     /// Prijedlog raspona za "Dodaj unos": od kraja zadnjeg unosa (ili početka radnog
-    /// dana ako ih nema) u trajanju jednog intervala, unutar istog dana.
-    static func suggestedRange(_ entries: [Entry], day: Date, settings: AppSettings) -> (start: Date, end: Date) {
+    /// dana ako ih nema) u trajanju jednog intervala, unutar istog dana. Danas najkasnije
+    /// do sada — unos ne smije završiti u budućnosti (vidi `EntryEditor`).
+    static func suggestedRange(_ entries: [Entry], day: Date, settings: AppSettings, now: Date = Date()) -> (start: Date, end: Date) {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: day)
-        let dayEnd = dayStart.addingTimeInterval(24 * 3600 - 60)
+        var dayEnd = Fmt.at(day, hour: 23, minute: 59)
+        if cal.isDate(now, inSameDayAs: day) {
+            dayEnd = min(dayEnd, cal.dateInterval(of: .minute, for: now)?.start ?? now)
+        }
+        let interval = TimeInterval(settings.intervalMinutes * 60)
         let workday = Fmt.at(day, hour: settings.workdayStartHour, minute: settings.workdayStartMinute)
-        let start = min(entries.map(\.end).max() ?? workday, dayEnd.addingTimeInterval(-60))
-        let end = min(start.addingTimeInterval(TimeInterval(settings.intervalMinutes * 60)), dayEnd)
+        let base = entries.map(\.end).max() ?? min(workday, dayEnd.addingTimeInterval(-interval))
+        let start = max(dayStart, min(base, dayEnd.addingTimeInterval(-60)))
+        let end = min(start.addingTimeInterval(interval), dayEnd)
         return (start, end)
     }
 
