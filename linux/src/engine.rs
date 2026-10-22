@@ -228,7 +228,7 @@ impl TrackerEngine {
         if !self.settings.show_startup_reminder || self.is_tracking || self.prompt_visible {
             return;
         }
-        if self.is_skipped_weekend(Local::now()) {
+        if self.is_skipped_weekend(Local::now()) || self.is_after_workday(Local::now()) {
             return;
         }
         self.present_start_reminder(Local::now());
@@ -669,6 +669,20 @@ impl TrackerEngine {
             && matches!(date.weekday(), chrono::Weekday::Sat | chrono::Weekday::Sun)
     }
 
+    /// Radni dan je gotov — prošlo je vrijeme automatskog zaustavljanja (kraj radnog dana).
+    /// Tad ne iskače nijedan podsjetnik: paljenje računala ili buđenje laptopa navečer nije
+    /// početak radnog dana. Bez auto-stopa kraj nije zadan, a auto-stop prije početka
+    /// radnog dana (rad preko ponoći) ne omeđuje dan — u oba slučaja nema ograničenja.
+    fn is_after_workday(&self, date: DateTime<Local>) -> bool {
+        if !self.settings.auto_stop_enabled {
+            return false;
+        }
+        let end = self.settings.auto_stop_hour.min(23) * 60 + self.settings.auto_stop_minute.min(59);
+        let start =
+            self.settings.workday_start_hour.min(23) * 60 + self.settings.workday_start_minute.min(59);
+        end > start && date.hour() * 60 + date.minute() >= end
+    }
+
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — None kad je opcija
     /// isključena, kad radni dan još nije počeo ili kad još nije prošao ni jedan cijeli
     /// interval, pa se nadoknada ne bi razlikovala od starta od sada.
@@ -705,7 +719,7 @@ impl TrackerEngine {
         if !self.settings.workday_start_enabled || self.is_tracking || self.is_locked || self.prompt_visible {
             return;
         }
-        if self.is_skipped_weekend(now) {
+        if self.is_skipped_weekend(now) || self.is_after_workday(now) {
             return;
         }
         let Some(start) = self.workday_start(now) else { return };
@@ -1373,10 +1387,14 @@ impl TrackerEngine {
             || old.workday_start_hour != self.settings.workday_start_hour
             || old.workday_start_minute != self.settings.workday_start_minute
             || old.skip_weekend_reminders != self.settings.skip_weekend_reminders
+            || old.auto_stop_enabled != self.settings.auto_stop_enabled
+            || old.auto_stop_hour != self.settings.auto_stop_hour
+            || old.auto_stop_minute != self.settings.auto_stop_minute
         {
             // Novo vrijeme vrijedi od idućeg početka radnog dana: ako je današnji već
             // prošao, danas se više ne javlja — inače bi pop-up iskočio čim se u
-            // postavkama namjesti raniji sat (ili vikendom isključi "Preskoči vikende").
+            // postavkama namjesti raniji sat (ili vikendom isključi "Preskoči vikende",
+            // ili se navečer auto-stop pomakne kasnije, pa kraj radnog dana više nije prošao).
             let now = Local::now();
             let started = self.workday_start(now).map(|s| now >= s).unwrap_or(false);
             self.workday_reminder_day_key = started.then(|| Store::day_key(now));

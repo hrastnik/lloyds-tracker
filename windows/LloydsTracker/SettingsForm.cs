@@ -273,7 +273,7 @@ internal sealed class SettingsForm : Form
 
         Toggle("Podsjetnik kod pokretanja (pop-up)", _engine.Settings.ShowStartupReminder,
             v => _engine.MutateSettings(s => s.ShowStartupReminder = v));
-        Caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.");
+        Caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan gotov.");
         Gap(8);
     }
 

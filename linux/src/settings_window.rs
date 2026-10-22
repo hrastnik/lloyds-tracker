@@ -241,7 +241,8 @@ impl SettingsWindow {
         system.append(&row("Podsjetnik kod pokretanja (pop-up)", &self.startup_reminder));
         system.append(&ui::wrapped(
             "Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking \
-             još nije aktivan.",
+             još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan \
+             gotov.",
             &["caption"],
             58,
         ));

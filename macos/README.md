@@ -117,6 +117,10 @@ Podsjetnik da se pokrene tracking javlja se na dva načina:
 **Vikendom** (subota i nedjelja) se ne javlja nijedan od njih — opcija *Preskoči vikende*,
 default uključena. Tracking se i vikendom može pokrenuti ručno iz menija.
 
+**Nakon kraja radnog dana** — vremena *Automatskog zaustavljanja* (default 16:00) — također se
+ne javlja nijedan: računalo upaljeno ili laptop probuđen navečer ne pita za početak dana. Bez
+uključenog auto-stopa kraj radnog dana nije zadan, pa tog ograničenja nema.
+
 Uz uključenu **nadoknadu** (default) pop-up, kad je radni dan već počeo, nudi *Start od
 8:30*, a strelice ‹ › uz gumb pomiču početak za jedan interval (uz 15 min u 9:42: 8:30,
 8:45 … 9:15, 9:30). Zadnji korak je početak trenutnog intervala — isto što i start od sada.

@@ -120,7 +120,7 @@ public sealed class TrackerEngine : IDisposable
     public void ShowStartupReminderIfNeeded()
     {
         if (!Settings.ShowStartupReminder || IsTracking || _prompt.IsVisible) return;
-        if (IsSkippedWeekend(DateTime.Now)) return;
+        if (IsSkippedWeekend(DateTime.Now) || IsAfterWorkday(DateTime.Now)) return;
         PresentStartReminder(DateTime.Now);
     }
 
@@ -548,6 +548,18 @@ public sealed class TrackerEngine : IDisposable
         => Settings.SkipWeekendReminders
             && date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
 
+    /// <summary>The work day is over — the auto-stop time (end of the work day) has passed. No
+    /// reminder pops up then: switching the computer on or waking the laptop in the evening isn't
+    /// the start of a work day. Without auto-stop there's no set end, and an auto-stop before the
+    /// start of the work day (work past midnight) doesn't bound the day — no limit in either case.</summary>
+    private bool IsAfterWorkday(DateTime date)
+    {
+        if (!Settings.AutoStopEnabled) return false;
+        int end = Math.Clamp(Settings.AutoStopHour, 0, 23) * 60 + Math.Clamp(Settings.AutoStopMinute, 0, 59);
+        int start = Math.Clamp(Settings.WorkdayStartHour, 0, 23) * 60 + Math.Clamp(Settings.WorkdayStartMinute, 0, 59);
+        return end > start && date.Hour * 60 + date.Minute >= end;
+    }
+
     /// <summary>The time the reminder offers to backfill from ("Start od 8:30") — null when the
     /// option is off, when the work day hasn't started yet, or when not even one whole interval has
     /// passed, so the backfill wouldn't differ from starting now.</summary>
@@ -579,7 +591,7 @@ public sealed class TrackerEngine : IDisposable
     private void CheckWorkdayStart(DateTime now)
     {
         if (!Settings.WorkdayStartEnabled || IsTracking || _session.IsLocked) return;
-        if (_prompt.IsVisible || IsSkippedWeekend(now)) return;
+        if (_prompt.IsVisible || IsSkippedWeekend(now) || IsAfterWorkday(now)) return;
         if (WorkdayStart(now) is not DateTime start || now < start) return;
 
         // An open reminder waits for an answer as long as it takes, so it may be from yesterday
@@ -1218,12 +1230,16 @@ public sealed class TrackerEngine : IDisposable
         if (old.WorkdayStartEnabled != Settings.WorkdayStartEnabled
             || old.WorkdayStartHour != Settings.WorkdayStartHour
             || old.WorkdayStartMinute != Settings.WorkdayStartMinute
-            || old.SkipWeekendReminders != Settings.SkipWeekendReminders)
+            || old.SkipWeekendReminders != Settings.SkipWeekendReminders
+            || old.AutoStopEnabled != Settings.AutoStopEnabled
+            || old.AutoStopHour != Settings.AutoStopHour
+            || old.AutoStopMinute != Settings.AutoStopMinute)
         {
             // The new time applies from the next start of the work day: if today's has already
             // passed, it stays quiet today — otherwise the pop-up would appear the moment an
             // earlier hour gets dialled in the settings (or "Preskoči vikende" is turned off on
-            // a weekend).
+            // a weekend, or auto-stop is moved later in the evening, so the end of the work day
+            // is no longer past).
             var now = DateTime.Now;
             bool started = WorkdayStart(now) is DateTime start && now >= start;
             _workdayReminderDayKey = started ? Store.DayKey(now) : null;

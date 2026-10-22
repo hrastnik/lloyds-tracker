@@ -111,7 +111,7 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Toggle("Podsjetnik kod pokretanja (pop-up)", isOn: $engine.settings.showStartupReminder)
-                caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan.")
+                caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan gotov.")
             }
 
             Section("Nova verzija") {
