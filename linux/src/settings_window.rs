@@ -199,8 +199,8 @@ impl SettingsWindow {
         auto_stop.append(&row("Vrijeme", &ui::time_box(&self.auto_stop_hour, &self.auto_stop_minute)));
         auto_stop.append(&ui::wrapped(
             "Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi \
-             samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut \
-             preko noći.",
+             samo za taj dan. Bez reakcije — ili ako je računalo tada ugašeno ili spava — dan se \
+             zatvara u to vrijeme, a prompt pita za blokove od zadnjeg zapisa.",
             &["caption"],
             58,
         ));
@@ -240,9 +240,10 @@ impl SettingsWindow {
         system.append(&self.launch_status);
         system.append(&row("Podsjetnik kod pokretanja (pop-up)", &self.startup_reminder));
         system.append(&ui::wrapped(
-            "Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking \
-             još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan \
-             gotov.",
+            "Kad se app pokrene u radnom vremenu, iskoči pop-up da te podsjeti da pokreneš radni \
+             dan ako tracking još nije aktivan. Prije početka radnog dana čeka zadano vrijeme, a \
+             nakon automatskog zaustavljanja šuti. Tracking prekinut gašenjem računala se sam \
+             nastavlja.",
             &["caption"],
             58,
         ));
@@ -402,8 +403,9 @@ impl SettingsWindow {
         ));
         self.backfill_caption.set_text(&format!(
             "Određuje što pop-up nudi kad ga otvoriš nakon {clock}. Uključeno: gumb „Start od \
-             {clock}” upisuje dan od {clock}, pa te prvi prompt pita što si radio od {clock} do \
-             sada — npr. probudiš laptop u {example} i prompt te pita za {clock}–{example}. \
+             {clock}” upisuje dan od {clock}, pa te prompt odmah pita što si radio od {clock} — \
+             npr. probudiš laptop u {example} i prompt te pita za {clock}–{example} (tekući \
+             blok ide u sljedeći prompt). \
              Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od \
              sada. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — \
              jutro ostaje neupisano."

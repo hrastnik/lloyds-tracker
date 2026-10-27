@@ -25,6 +25,30 @@ mod iso8601 {
     }
 }
 
+/// Isto kao `iso8601`, za neobavezno vrijeme: `None` se ne piše (kao Swiftov
+/// `encodeIfPresent`), a nedostajući ključ (uz `#[serde(default)]`) ili `null` daju `None`.
+mod iso8601_opt {
+    use chrono::{DateTime, Local};
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(date: &Option<DateTime<Local>>, s: S) -> Result<S::Ok, S::Error> {
+        match date {
+            Some(date) => super::iso8601::serialize(date, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DateTime<Local>>, D::Error> {
+        Option::<String>::deserialize(d)?
+            .map(|s| {
+                DateTime::parse_from_rfc3339(&s)
+                    .map(|dt| dt.with_timezone(&Local))
+                    .map_err(serde::de::Error::custom)
+            })
+            .transpose()
+    }
+}
+
 /// UUID velikim slovima s crticama — Swiftov `UUID` string oblik.
 mod upper_uuid {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -208,11 +232,33 @@ pub struct PromptSegment {
     pub text: String,
 }
 
-/// Period bez opisa — preskočeni period koji se nosi u sljedeći prompt.
-#[derive(Debug, Clone, Copy)]
+/// Period bez opisa — preskočeni period koji se nosi u sljedeći prompt. Polja abecedno
+/// (sprema se uz sesiju, vidi `SavedSession`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PromptSpan {
-    pub start: DateTime<Local>,
+    #[serde(with = "iso8601")]
     pub end: DateTime<Local>,
+    #[serde(with = "iso8601")]
+    pub start: DateTime<Local>,
+}
+
+/// Trackanje u tijeku, spremljeno u `session.json` — da ga gašenje računala (ili izlaz iz
+/// aplikacije) ne izgubi. Kod idućeg pokretanja se nastavi ili zatvori na kraju radnog dana.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSession {
+    /// Zakazano automatsko zaustavljanje (s eventualnim produženjem).
+    #[serde(default, with = "iso8601_opt", skip_serializing_if = "Option::is_none")]
+    pub auto_stop_at: Option<DateTime<Local>>,
+    /// Preskočeni periodi koji se nose u sljedeći prompt.
+    #[serde(default)]
+    pub carried: Vec<PromptSpan>,
+    pub day_key: String,
+    /// Dan je već zatvoren i zadnji prompt čeka odgovor — kraj njegovog perioda.
+    #[serde(default, with = "iso8601_opt", skip_serializing_if = "Option::is_none")]
+    pub final_end: Option<DateTime<Local>>,
+    #[serde(with = "iso8601")]
+    pub last_covered: DateTime<Local>,
 }
 
 impl PromptSpan {
@@ -644,5 +690,30 @@ mod tests {
         let items = Summarize::timeline(&rows);
         assert_eq!(items.len(), 3);
         assert!(matches!(items[1], TimelineItem::Gap(s, e) if s == at(10, 0) && e == at(10, 30)));
+    }
+
+    #[test]
+    fn saved_session_matches_shared_schema() {
+        let session = SavedSession {
+            auto_stop_at: None,
+            carried: vec![PromptSpan { end: at(9, 30), start: at(9, 15) }],
+            day_key: "2026-07-15".into(),
+            final_end: None,
+            last_covered: at(9, 45),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        // Ključevi abecedno i camelCase kao macOS `sortedKeys`; prazni opcionalni se ne pišu.
+        let keys: Vec<_> = ["\"carried\"", "\"end\"", "\"start\"", "\"dayKey\"", "\"lastCovered\""]
+            .iter()
+            .map(|k| json.find(k).unwrap())
+            .collect();
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{json}");
+        assert!(!json.contains("autoStopAt") && !json.contains("finalEnd"));
+        assert_eq!(serde_json::from_str::<SavedSession>(&json).unwrap(), session);
+
+        // Stari / ručno pisani file bez opcionalnih ključeva se i dalje čita.
+        let minimal: SavedSession =
+            serde_json::from_str(r#"{"dayKey":"2026-07-15","lastCovered":"2026-07-15T07:45:00Z"}"#).unwrap();
+        assert!(minimal.carried.is_empty() && minimal.auto_stop_at.is_none() && minimal.final_end.is_none());
     }
 }

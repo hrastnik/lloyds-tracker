@@ -78,6 +78,14 @@ public sealed class TrackerEngine : IDisposable
     private bool _updateCheckInFlight;
     /// <summary>A new version whose pop-up waits for the prompt/reminder to go away.</summary>
     private AvailableUpdate? _pendingUpdatePopup;
+    /// <summary>End of the final prompt's period while the day waits for the last answer — saved
+    /// with the session.</summary>
+    private DateTime? _finalEnd;
+    /// <summary>The state last written to session.json (null = no file).</summary>
+    private SavedSession? _savedSession;
+    /// <summary>The interrupted session has been restored — until then a tick does nothing, so it
+    /// doesn't overwrite session.json or offer a reminder before the session continues.</summary>
+    private bool _launched;
     private bool _disposed;
     /// <summary>Hidden control used to marshal background-thread callbacks (SessionSwitch)
     /// back onto the UI thread.</summary>
@@ -111,24 +119,36 @@ public sealed class TrackerEngine : IDisposable
         {
             startupDelay.Stop();
             startupDelay.Dispose();
-            ShowStartupReminderIfNeeded();
+            Launch();
         };
         startupDelay.Start();
     }
 
-    /// <summary>Launch reminder — only if enabled and the day isn't started yet.</summary>
+    /// <summary>After launch: continue tracking that switching the computer off interrupted, and if
+    /// there is none — the start-of-day reminder.</summary>
+    private void Launch()
+    {
+        _launched = true;
+        RestoreSession(DateTime.Now);
+        ShowStartupReminderIfNeeded();
+    }
+
+    /// <summary>Launch reminder — only if enabled, the day isn't started yet (so tracking doesn't
+    /// get forgotten) and the work hours are on. Before the work day starts it stays quiet — it
+    /// pops up at the set time (CheckWorkdayStart).</summary>
     public void ShowStartupReminderIfNeeded()
     {
+        var now = DateTime.Now;
         if (!Settings.ShowStartupReminder || IsTracking || _prompt.IsVisible) return;
-        if (IsSkippedWeekend(DateTime.Now) || IsAfterWorkday(DateTime.Now)) return;
-        PresentStartReminder(DateTime.Now);
+        if (IsSkippedWeekend(now) || IsBeforeWorkday(now) || IsAfterWorkday(now)) return;
+        PresentStartReminder(now);
     }
 
     // MARK: - Controls
 
     /// <summary><paramref name="backfillFrom"/> (from the work-day-start reminder) moves the
-    /// start of tracking back — the first prompt then asks about the whole morning, e.g.
-    /// 8:30–9:45.</summary>
+    /// start of tracking back — a prompt right away asks about the morning's finished blocks, e.g.
+    /// 8:30–9:45 for a start at 9:52 (the current block 9:45–10:00 goes to the next prompt).</summary>
     public void Start(DateTime? backfillFrom = null)
     {
         var now = DateTime.Now;
@@ -162,11 +182,27 @@ public sealed class TrackerEngine : IDisposable
         _carriedSpans.Clear();
         _pendingReturn = null;
         AwaitingFinalAnswer = false;
+        _finalEnd = null;
         NextPromptAt = AlignedNextPrompt(now);
         _autoStopWarningShown = false;
         AutoStopAt = NextAutoStop(now);
         IsTracking = true;
+        PersistSession();
+        if (backfill != null)
+            PromptPastBlocks(now, $"Nadoknada — na čemu si radio od {Fmt.Hhmm(_lastCovered)}?");
         RaiseChanged();
+    }
+
+    /// <summary>Asks right away about the finished blocks from _lastCovered to the start of the
+    /// current block (a backfill after starting from an earlier time, continuing after the computer
+    /// was off). The current block goes to the next prompt — if this one lives to its boundary, its
+    /// period just grows.</summary>
+    private void PromptPastBlocks(DateTime now, string note)
+    {
+        var blockStart = GridFloor(now, Interval);
+        if ((blockStart - _lastCovered).TotalSeconds <= 60) return;
+        _activePromptEnd = blockStart;
+        Show(new PromptRequest { Start = _lastCovered, End = blockStart, Note = note, AllowSnooze = false });
     }
 
     public void Stop()
@@ -183,8 +219,9 @@ public sealed class TrackerEngine : IDisposable
 
     /// <summary><paramref name="endTime"/> is the end of the last period — for an automatic
     /// stop that's the scheduled time, not the moment the final prompt gets answered (which
-    /// may well be the next morning).</summary>
-    private void Stop(DateTime endTime)
+    /// may well be the next morning). <paramref name="note"/> replaces the final prompt's default
+    /// message.</summary>
+    private void Stop(DateTime endTime, string? note = null)
     {
         if (!IsTracking || AwaitingFinalAnswer) return;
         var now = DateTime.Now;
@@ -216,15 +253,16 @@ public sealed class TrackerEngine : IDisposable
             // period was cut at the end of its own day — say so, or the entry looks wrong.
             bool overnight = Store.DayKey(endTime) != Store.DayKey(now);
             AwaitingFinalAnswer = true;
+            _finalEnd = endTime;
             Show(new PromptRequest
             {
                 Start = periodStart,
                 // A prompt hanging only because of skipped rows has no period of its own.
                 End = hasPeriod ? periodEnd : periodStart,
                 IsFinal = true,
-                Note = overnight
+                Note = note ?? (overnight
                     ? $"Prompt je prenoćio — period je odrezan na kraj radnog dana ({Fmt.Hhmm(endTime)})."
-                    : "Kraj dana — što si radio u zadnjem periodu?",
+                    : "Kraj dana — što si radio u zadnjem periodu?"),
                 AllowSnooze = false
             });
             RaiseChanged();
@@ -239,6 +277,7 @@ public sealed class TrackerEngine : IDisposable
     {
         IsTracking = false;
         AwaitingFinalAnswer = false;
+        _finalEnd = null;
         _carriedSpans.Clear();
         _pendingReturn = null;
         CancelAutoStop();
@@ -246,6 +285,7 @@ public sealed class TrackerEngine : IDisposable
         _sessionStart = null;
         AwaitingReturnSince = null;
         PersistDay();
+        PersistSession();
         RaiseChanged();
         OpenSummary(DateTime.TryParseExact(CurrentDayKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var sessionDay) ? sessionDay : DateTime.Now);
@@ -504,6 +544,13 @@ public sealed class TrackerEngine : IDisposable
         // 16:00 → the stop is scheduled for tomorrow) isn't interrupted — while the computer is
         // running; sleeping across midnight is caught in Tick (SleepGap).
         if (Settings.AutoStopEnabled && AutoStopAt is DateTime stopAt && stopAt > now) return null;
+        return SessionDayCutoff();
+    }
+
+    /// <summary>The end of the work day on the session's day — see OvernightCutoff; a session the
+    /// computer being switched off interrupted uses it too.</summary>
+    private DateTime? SessionDayCutoff()
+    {
         if (!DateTime.TryParseExact(CurrentDayKey, "yyyy-MM-dd", CultureInfo.InvariantCulture,
                 DateTimeStyles.None, out var sessionDay))
             return null;
@@ -553,25 +600,43 @@ public sealed class TrackerEngine : IDisposable
     /// the start of a work day. Without auto-stop there's no set end, and an auto-stop before the
     /// start of the work day (work past midnight) doesn't bound the day — no limit in either case.</summary>
     private bool IsAfterWorkday(DateTime date)
+        => Settings.AutoStopEnabled && WorkdayBounded && date.Hour * 60 + date.Minute >= AutoStopMinuteOfDay;
+
+    /// <summary>The work day hasn't started yet — switching the computer on at 7:45 with the day
+    /// starting at 8:30 offers no start, the reminder pops up only at 8:30. Same as IsAfterWorkday:
+    /// work past midnight (auto-stop before the start of the work day) isn't bounded.</summary>
+    private bool IsBeforeWorkday(DateTime date)
     {
-        if (!Settings.AutoStopEnabled) return false;
-        int end = Math.Clamp(Settings.AutoStopHour, 0, 23) * 60 + Math.Clamp(Settings.AutoStopMinute, 0, 59);
-        int start = Math.Clamp(Settings.WorkdayStartHour, 0, 23) * 60 + Math.Clamp(Settings.WorkdayStartMinute, 0, 59);
-        return end > start && date.Hour * 60 + date.Minute >= end;
+        if (WorkdayStart(date) is not DateTime start) return false;
+        if (Settings.AutoStopEnabled && !WorkdayBounded) return false;
+        return date < start;
     }
+
+    /// <summary>The end of the work day (auto-stop) is after its start — the day doesn't cross
+    /// midnight.</summary>
+    private bool WorkdayBounded
+        => AutoStopMinuteOfDay > Math.Clamp(Settings.WorkdayStartHour, 0, 23) * 60 + Math.Clamp(Settings.WorkdayStartMinute, 0, 59);
+
+    private int AutoStopMinuteOfDay
+        => Math.Clamp(Settings.AutoStopHour, 0, 23) * 60 + Math.Clamp(Settings.AutoStopMinute, 0, 59);
 
     /// <summary>The time the reminder offers to backfill from ("Start od 8:30") — null when the
     /// option is off, when the work day hasn't started yet, or when not even one whole interval has
-    /// passed, so the backfill wouldn't differ from starting now.</summary>
+    /// passed, so the backfill wouldn't differ from starting now. What's already recorded today
+    /// (e.g. the morning before a manual Stop) isn't offered again — then the start is the end of
+    /// the last entry.</summary>
     private DateTime? BackfillStart(DateTime now)
     {
         if (!Settings.WorkdayStartBackfillEnabled) return null;
-        if (WorkdayStart(now) is not DateTime start) return null;
+        if (WorkdayStart(now) is not DateTime workday) return null;
+        var start = workday;
+        if (CurrentDayKey == Store.DayKey(now) && Entries.Count > 0)
+            start = Max(start, Entries.Max(e => e.End));
         return start < GridFloor(now, Interval) ? start : null;
     }
 
     /// <summary>The times the reminder's ‹ › step the start through: from the start of the work
-    /// day, then every <c>interval</c> minutes, and the last one is the start of the current
+    /// day, then along the interval grid, and the last one is the start of the current
     /// interval — where a start without backfill begins too, so a separate "from now" isn't needed
     /// (at 9:42 with 15 min: 8:30 … 9:15, 9:30). Empty → no backfill.</summary>
     private List<DateTime> BackfillOptions(DateTime now)
@@ -579,7 +644,9 @@ public sealed class TrackerEngine : IDisposable
         var options = new List<DateTime>();
         if (BackfillStart(now) is not DateTime start) return options;
         var current = GridFloor(now, Interval);
-        for (var t = start; t < current; t = t.AddSeconds(Interval))
+        options.Add(start);
+        // A start off the grid (today's last entry ending at 12:03) continues along the grid (12:15 …).
+        for (var t = GridFloor(start, Interval).AddSeconds(Interval); t < current; t = t.AddSeconds(Interval))
             options.Add(t);
         options.Add(current);
         return options;
@@ -650,6 +717,83 @@ public sealed class TrackerEngine : IDisposable
         var now = DateTime.Now;
         if (WorkdayStart(now) is DateTime start && now >= start)
             _workdayReminderDayKey = Store.DayKey(now);
+    }
+
+    // MARK: - Interrupted session
+
+    /// <summary>Tracking state in session.json — written only when it changes, deleted when
+    /// tracking stops.</summary>
+    private void PersistSession()
+    {
+        var current = IsTracking ? new SavedSession
+        {
+            AutoStopAt = AutoStopAt,
+            Carried = _carriedSpans.ToList(),
+            DayKey = CurrentDayKey,
+            FinalEnd = AwaitingFinalAnswer ? _finalEnd : null,
+            LastCovered = _lastCovered,
+        } : null;
+        if (current == null ? _savedSession == null : current.SameAs(_savedSession)) return;
+        _savedSession = current;
+        Store.SaveSession(current);
+    }
+
+    /// <summary>Tracking interrupted by switching the computer off (or quitting the app). If the
+    /// same day's work hours are still on, tracking simply continues and asks about the missed time
+    /// right away. If the end of the work day has passed meanwhile, the day closes at the end of the
+    /// work day and the final prompt asks about the blocks since the last entry — as if the computer
+    /// had been on.</summary>
+    private void RestoreSession(DateTime now)
+    {
+        if (Store.LoadSession() is not SavedSession saved) return;
+        // A session "from the future" (the clock was set back meanwhile) isn't continued.
+        if (string.CompareOrdinal(saved.DayKey, Store.DayKey(now)) > 0 || saved.LastCovered > now)
+        {
+            Store.SaveSession(null);
+            return;
+        }
+        _savedSession = saved;
+        CurrentDayKey = saved.DayKey;
+        Entries = Store.LoadDay(saved.DayKey);
+        _lastCovered = saved.LastCovered;
+        _carriedSpans.Clear();
+        _carriedSpans.AddRange(saved.Carried);
+        AutoStopAt = saved.AutoStopAt;
+        _sessionStart = saved.LastCovered;
+        IsTracking = true;
+        RaiseChanged();
+
+        if (saved.FinalEnd is DateTime finalEnd)
+        {
+            // The day was closed with the final prompt unanswered — ask again.
+            Stop(finalEnd);
+            return;
+        }
+        string OffNote(DateTime end)
+        {
+            string day = Store.DayKey(end) == Store.DayKey(now) ? "" : $" ({Fmt.DayTitle(end)})";
+            return $"Računalo je bilo ugašeno — tracking je zaustavljen u {Fmt.Hhmm(end)}{day}. Što si radio od zadnjeg zapisa?";
+        }
+        if (saved.DayKey != Store.DayKey(now))
+        {
+            // A session from some past day: the end is its scheduled stop if that fell on the same
+            // day, otherwise the end of the work day from the settings (as for a prompt left overnight).
+            var end = saved.AutoStopAt is DateTime scheduled && Store.DayKey(scheduled) == saved.DayKey
+                ? scheduled
+                : SessionDayCutoff() ?? _lastCovered;
+            Stop(end, OffNote(end));
+            return;
+        }
+        if (AutoStopAt is DateTime stopAt && now >= stopAt)
+        {
+            Stop(stopAt, OffNote(stopAt));
+            return;
+        }
+        // The work hours are still on — tracking goes on.
+        _workdayReminderDayKey = CurrentDayKey;
+        NextPromptAt = AlignedNextPrompt(now);
+        PromptPastBlocks(now, $"Računalo je bilo ugašeno — tracking se nastavlja. Na čemu si radio od {Fmt.Hhmm(_lastCovered)}?");
+        RaiseChanged();
     }
 
     // MARK: - New version
@@ -785,9 +929,11 @@ public sealed class TrackerEngine : IDisposable
 
     private void Tick()
     {
+        if (!_launched) return;
         var now = DateTime.Now;
         var previousTick = _lastTickAt;
         _lastTickAt = now;
+        PersistSession();
         CheckWorkdayStart(now);
         RefreshStartReminderOptions(now);
         CheckForUpdateIfDue(now);

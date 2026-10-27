@@ -195,8 +195,8 @@ internal sealed class SettingsForm : Form
 
     private string WorkdayBackfillCaption()
         => $"Određuje što pop-up nudi kad ga otvoriš nakon {WorkdayClock(0)}. "
-            + $"Uključeno: gumb „Start od {WorkdayClock(0)}” upisuje dan od {WorkdayClock(0)}, pa te prvi prompt pita što si radio od {WorkdayClock(0)} do sada "
-            + $"— npr. probudiš laptop u {WorkdayClock(75)} i prompt te pita za {WorkdayClock(0)}–{WorkdayClock(75)}. Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. "
+            + $"Uključeno: gumb „Start od {WorkdayClock(0)}” upisuje dan od {WorkdayClock(0)}, pa te prompt odmah pita što si radio od {WorkdayClock(0)} "
+            + $"— npr. probudiš laptop u {WorkdayClock(75)} i prompt te pita za {WorkdayClock(0)}–{WorkdayClock(75)} (tekući blok ide u sljedeći prompt). Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. "
             + "Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.";
 
     /// <summary>The configured workday start, <paramref name="offsetMinutes"/> later, as
@@ -228,7 +228,7 @@ internal sealed class SettingsForm : Form
         _autoStopHour.Enabled = _engine.Settings.AutoStopEnabled;
         _autoStopMinute.Enabled = _engine.Settings.AutoStopEnabled;
 
-        Caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut preko noći.");
+        Caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije — ili ako je računalo tada ugašeno ili spava — dan se zatvara u to vrijeme, a prompt pita za blokove od zadnjeg zapisa.");
         Gap(8);
     }
 
@@ -273,7 +273,7 @@ internal sealed class SettingsForm : Form
 
         Toggle("Podsjetnik kod pokretanja (pop-up)", _engine.Settings.ShowStartupReminder,
             v => _engine.MutateSettings(s => s.ShowStartupReminder = v));
-        Caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan gotov.");
+        Caption("Kad se app pokrene u radnom vremenu, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan. Prije početka radnog dana čeka zadano vrijeme, a nakon automatskog zaustavljanja šuti. Tracking prekinut gašenjem računala se sam nastavlja.");
         Gap(8);
     }
 

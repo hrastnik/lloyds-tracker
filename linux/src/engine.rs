@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::autostart::LaunchAtLogin;
 use crate::idle::IdleMonitor;
 use crate::models::{
-    AppSettings, ChronoRow, Entry, EntryKind, PendingPause, PromptRequest, PromptResult, PromptSpan,
+    AppSettings, ChronoRow, Entry, EntryKind, PendingPause, PromptRequest, PromptResult, PromptSpan, SavedSession,
     PromptStyle, Summarize,
 };
 use crate::session::SessionMonitor;
@@ -146,6 +146,13 @@ pub struct TrackerEngine {
     update_check_in_flight: bool,
     /// Nova verzija čiji pop-up čeka da se makne prompt/podsjetnik.
     pending_update_popup: Option<AvailableUpdate>,
+    /// Kraj perioda zadnjeg prompta dok dan čeka zadnji odgovor — sprema se uz sesiju.
+    final_end: Option<DateTime<Local>>,
+    /// Zadnje stanje zapisano u `session.json` (None = datoteke nema).
+    saved_session: Option<SavedSession>,
+    /// Prekinuta sesija je obnovljena — do tad tick ne radi ništa, da ne prebriše
+    /// `session.json` niti ponudi podsjetnik prije nastavka.
+    launched: bool,
 
     // MARK: Zrcalo stanja prozora (engine mora znati je li što otvoreno)
     prompt_visible: bool,
@@ -202,6 +209,9 @@ impl TrackerEngine {
             next_update_check_at: now + Duration::seconds(UPDATE_FIRST_CHECK_DELAY),
             update_check_in_flight: false,
             pending_update_popup: None,
+            final_end: None,
+            saved_session: None,
+            launched: false,
             prompt_visible: false,
             reminder_visible: false,
             reminder_shown_at: None,
@@ -222,22 +232,33 @@ impl TrackerEngine {
 
     // MARK: - Podsjetnik na pokretanju
 
-    /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama i dan još
-    /// nije pokrenut (da se ne zaboravi startati tracking).
+    /// Nakon pokretanja: nastavi trackanje koje je prekinulo gašenje računala, a ako ga
+    /// nema — podsjetnik na početak dana.
+    pub fn launch(&mut self) {
+        self.launched = true;
+        self.restore_session(Local::now());
+        self.show_startup_reminder_if_needed();
+    }
+
+    /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama, dan još nije
+    /// pokrenut (da se ne zaboravi startati tracking) i radno vrijeme traje. Prije početka
+    /// radnog dana šuti — javi se u zadano vrijeme (`check_workday_start`).
     pub fn show_startup_reminder_if_needed(&mut self) {
+        let now = Local::now();
         if !self.settings.show_startup_reminder || self.is_tracking || self.prompt_visible {
             return;
         }
-        if self.is_skipped_weekend(Local::now()) || self.is_after_workday(Local::now()) {
+        if self.is_skipped_weekend(now) || self.is_before_workday(now) || self.is_after_workday(now) {
             return;
         }
-        self.present_start_reminder(Local::now());
+        self.present_start_reminder(now);
     }
 
     // MARK: - Kontrole
 
     /// `backfill_from` (iz podsjetnika na početak radnog dana) pomiče početak trackanja
-    /// unatrag — prvi prompt onda pita za cijelo jutro, npr. 8:30–9:45.
+    /// unatrag — prompt odmah pita za završene blokove jutra, npr. 8:30–9:45 kod starta u
+    /// 9:52 (tekući blok 9:45–10:00 ide u sljedeći prompt).
     pub fn start(&mut self, backfill_from: Option<DateTime<Local>>) {
         let now = Local::now();
         self.current_day_key = Store::day_key(now);
@@ -270,10 +291,31 @@ impl TrackerEngine {
         self.carried_spans.clear();
         self.pending_return = None;
         self.awaiting_final_answer = false;
+        self.final_end = None;
         self.next_prompt_at = Some(self.aligned_next_prompt(now));
         self.auto_stop_warning_shown = false;
         self.auto_stop_at = self.next_auto_stop(now);
         self.is_tracking = true;
+        self.persist_session();
+        if backfill.is_some() {
+            let note = format!("Nadoknada — na čemu si radio od {}?", Fmt::hhmm(self.last_covered));
+            self.prompt_past_blocks(now, note);
+        }
+    }
+
+    /// Odmah pita za završene blokove od `last_covered` do početka tekućeg bloka (nadoknada
+    /// nakon starta od ranijeg vremena, nastavak nakon gašenja računala). Tekući blok ide u
+    /// sljedeći prompt — ako ovaj dočeka njegovu granicu, period mu se samo produži.
+    fn prompt_past_blocks(&mut self, now: DateTime<Local>, note: String) {
+        let block_start = grid_floor(now, self.interval_seconds());
+        if (block_start - self.last_covered).num_seconds() <= 60 {
+            return;
+        }
+        self.active_prompt_end = Some(block_start);
+        let mut request = PromptRequest::new(self.last_covered, Some(block_start));
+        request.note = Some(note);
+        request.allow_snooze = false;
+        self.show_prompt(request);
     }
 
     pub fn stop(&mut self) {
@@ -285,15 +327,16 @@ impl TrackerEngine {
             Some(scheduled)
                 if scheduled > now && (scheduled - now).num_milliseconds() as f64 / 1000.0 <= AUTO_STOP_LEAD =>
             {
-                self.stop_at(scheduled)
+                self.stop_at(scheduled, None)
             }
-            _ => self.stop_at(now),
+            _ => self.stop_at(now, None),
         }
     }
 
     /// `end_time` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
     /// vrijeme, a ne trenutak kad se odgovori na zadnji prompt (koji može biti i sutra).
-    fn stop_at(&mut self, end_time: DateTime<Local>) {
+    /// `note` zamjenjuje zadanu poruku zadnjeg prompta.
+    fn stop_at(&mut self, end_time: DateTime<Local>, note: Option<String>) {
         if !self.is_tracking || self.awaiting_final_answer {
             return;
         }
@@ -326,18 +369,21 @@ impl TrackerEngine {
             // odrezan na kraj *njegovog* dana — to mora pisati, inače unos izgleda pogrešno.
             let overnight = Store::day_key(end_time) != Store::day_key(now);
             self.awaiting_final_answer = true;
+            self.final_end = Some(end_time);
             // Prompt koji visi samo zbog preskočenih redova nema svoj period.
             let mut request =
                 PromptRequest::new(period_start, Some(if has_period { period_end } else { period_start }));
             request.is_final = true;
-            request.note = Some(if overnight {
-                format!(
-                    "Prompt je prenoćio — period je odrezan na kraj radnog dana ({}).",
-                    Fmt::hhmm(end_time)
-                )
-            } else {
-                "Kraj dana — što si radio u zadnjem periodu?".into()
-            });
+            request.note = Some(note.unwrap_or_else(|| {
+                if overnight {
+                    format!(
+                        "Prompt je prenoćio — period je odrezan na kraj radnog dana ({}).",
+                        Fmt::hhmm(end_time)
+                    )
+                } else {
+                    "Kraj dana — što si radio u zadnjem periodu?".into()
+                }
+            }));
             request.allow_snooze = false;
             self.show_prompt(request);
         } else {
@@ -348,12 +394,14 @@ impl TrackerEngine {
     fn finalize_stop(&mut self) {
         self.is_tracking = false;
         self.awaiting_final_answer = false;
+        self.final_end = None;
         self.carried_spans.clear();
         self.pending_return = None;
         self.cancel_auto_stop();
         self.next_prompt_at = None;
         self.awaiting_return_since = None;
         self.persist_day();
+        self.persist_session();
         self.effects.push(Effect::OpenSummary(self.session_day()));
     }
 
@@ -622,6 +670,12 @@ impl TrackerEngine {
         if self.settings.auto_stop_enabled && self.auto_stop_at.is_some_and(|at| at > now) {
             return None;
         }
+        self.session_day_cutoff()
+    }
+
+    /// Kraj radnog dana na dan sesije — vidi `overnight_cutoff`; koristi ga i sesija koju je
+    /// prekinulo gašenje računala.
+    fn session_day_cutoff(&self) -> Option<DateTime<Local>> {
         let day = chrono::NaiveDate::parse_from_str(&self.current_day_key, "%Y-%m-%d").ok()?;
         let hour = self.settings.auto_stop_hour.min(23);
         let minute = self.settings.auto_stop_minute.min(59);
@@ -674,36 +728,61 @@ impl TrackerEngine {
     /// početak radnog dana. Bez auto-stopa kraj nije zadan, a auto-stop prije početka
     /// radnog dana (rad preko ponoći) ne omeđuje dan — u oba slučaja nema ograničenja.
     fn is_after_workday(&self, date: DateTime<Local>) -> bool {
-        if !self.settings.auto_stop_enabled {
+        self.settings.auto_stop_enabled
+            && self.workday_bounded()
+            && date.hour() * 60 + date.minute() >= self.auto_stop_minute_of_day()
+    }
+
+    /// Radni dan još nije počeo — paljenje računala u 7:45 uz početak u 8:30 ne nudi start,
+    /// podsjetnik iskoči tek u 8:30. Isto kao kod `is_after_workday`: rad preko ponoći
+    /// (auto-stop prije početka radnog dana) nije omeđen.
+    fn is_before_workday(&self, date: DateTime<Local>) -> bool {
+        let Some(start) = self.workday_start(date) else { return false };
+        if self.settings.auto_stop_enabled && !self.workday_bounded() {
             return false;
         }
-        let end = self.settings.auto_stop_hour.min(23) * 60 + self.settings.auto_stop_minute.min(59);
+        date < start
+    }
+
+    /// Kraj radnog dana (auto-stop) je iza početka — dan se ne proteže preko ponoći.
+    fn workday_bounded(&self) -> bool {
         let start =
             self.settings.workday_start_hour.min(23) * 60 + self.settings.workday_start_minute.min(59);
-        end > start && date.hour() * 60 + date.minute() >= end
+        self.auto_stop_minute_of_day() > start
+    }
+
+    fn auto_stop_minute_of_day(&self) -> u32 {
+        self.settings.auto_stop_hour.min(23) * 60 + self.settings.auto_stop_minute.min(59)
     }
 
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — None kad je opcija
     /// isključena, kad radni dan još nije počeo ili kad još nije prošao ni jedan cijeli
-    /// interval, pa se nadoknada ne bi razlikovala od starta od sada.
+    /// interval, pa se nadoknada ne bi razlikovala od starta od sada. Ono što je danas već
+    /// zapisano (npr. jutro prije ručnog Stopa) se ne nudi ponovno — tad je početak kraj
+    /// zadnjeg unosa.
     fn backfill_start(&self, now: DateTime<Local>) -> Option<DateTime<Local>> {
         if !self.settings.workday_start_backfill_enabled {
             return None;
         }
-        let start = self.workday_start(now)?;
+        let workday = self.workday_start(now)?;
+        let recorded = (self.current_day_key == Store::day_key(now))
+            .then(|| self.entries.iter().map(|e| e.end).max())
+            .flatten();
+        let start = recorded.map_or(workday, |end| workday.max(end));
         (start < grid_floor(now, self.interval_seconds())).then_some(start)
     }
 
-    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa svakih
-    /// `interval` minuta, a zadnje je početak trenutnog intervala — od tamo kreće i start
+    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa po
+    /// mreži intervala, a zadnje je početak trenutnog intervala — od tamo kreće i start
     /// bez nadoknade, pa zasebni "od sada" ne treba (u 9:42 uz 15 min: 8:30 … 9:15, 9:30).
     /// Prazno → nema nadoknade.
     fn backfill_options(&self, now: DateTime<Local>) -> Vec<DateTime<Local>> {
         let Some(start) = self.backfill_start(now) else { return Vec::new() };
         let current = grid_floor(now, self.interval_seconds());
         let step = Duration::seconds(self.interval_seconds());
-        let mut options = Vec::new();
-        let mut t = start;
+        let mut options = vec![start];
+        // Početak izvan mreže (kraj zadnjeg unosa u 12:03) — dalje se ide po mreži (12:15 …).
+        let mut t = grid_floor(start, self.interval_seconds()) + step;
         while t < current {
             options.push(t);
             t += step;
@@ -827,6 +906,86 @@ impl TrackerEngine {
         self.auto_stop_warning_visible = false;
     }
 
+    // MARK: - Prekinuta sesija
+
+    /// Stanje trackanja u `session.json` — piše se samo kad se promijeni, a briše kad
+    /// tracking stane.
+    fn persist_session(&mut self) {
+        let current = self.is_tracking.then(|| SavedSession {
+            auto_stop_at: self.auto_stop_at,
+            carried: self.carried_spans.clone(),
+            day_key: self.current_day_key.clone(),
+            final_end: if self.awaiting_final_answer { self.final_end } else { None },
+            last_covered: self.last_covered,
+        });
+        if current == self.saved_session {
+            return;
+        }
+        Store::save_session(current.as_ref());
+        self.saved_session = current;
+    }
+
+    /// Trackanje koje je prekinulo gašenje računala (ili izlaz iz aplikacije). Ako radno
+    /// vrijeme istog dana još traje, tracking se sam nastavi i odmah pita za propušteno. Ako
+    /// je kraj radnog dana u međuvremenu prošao, dan se zatvori na kraju radnog dana, a
+    /// zadnji prompt pita za blokove od zadnjeg zapisa — kao da je računalo bilo upaljeno.
+    fn restore_session(&mut self, now: DateTime<Local>) {
+        let Some(saved) = Store::load_session() else { return };
+        let today = Store::day_key(now);
+        // Sesija "iz budućnosti" (sat je u međuvremenu vraćen unatrag) se ne nastavlja.
+        if saved.day_key > today || saved.last_covered > now {
+            Store::save_session(None);
+            return;
+        }
+        self.current_day_key = saved.day_key.clone();
+        self.entries = Store::load_day(&saved.day_key);
+        self.last_covered = saved.last_covered;
+        self.carried_spans = saved.carried.clone();
+        self.auto_stop_at = saved.auto_stop_at;
+        self.is_tracking = true;
+        self.saved_session = Some(saved.clone());
+
+        if let Some(end) = saved.final_end {
+            // Dan je bio zatvoren, a zadnji prompt bez odgovora — pita se opet.
+            self.stop_at(end, None);
+            return;
+        }
+        let off_note = |end: DateTime<Local>| {
+            let day = if Store::day_key(end) == today {
+                String::new()
+            } else {
+                format!(" ({})", Fmt::day_title(end))
+            };
+            format!(
+                "Računalo je bilo ugašeno — tracking je zaustavljen u {}{day}. Što si radio od zadnjeg zapisa?",
+                Fmt::hhmm(end)
+            )
+        };
+        if saved.day_key != today {
+            // Sesija od nekog prošlog dana: kraj je njeno zakazano zaustavljanje ako je
+            // padalo u taj dan, inače kraj radnog dana iz postavki (kao kod prenoćenog prompta).
+            let end = saved
+                .auto_stop_at
+                .filter(|at| Store::day_key(*at) == saved.day_key)
+                .or_else(|| self.session_day_cutoff())
+                .unwrap_or(self.last_covered);
+            self.stop_at(end, Some(off_note(end)));
+            return;
+        }
+        if let Some(stop_at) = self.auto_stop_at.filter(|at| now >= *at) {
+            self.stop_at(stop_at, Some(off_note(stop_at)));
+            return;
+        }
+        // Radno vrijeme još traje — tracking ide dalje.
+        self.workday_reminder_day_key = Some(self.current_day_key.clone());
+        self.next_prompt_at = Some(self.aligned_next_prompt(now));
+        let note = format!(
+            "Računalo je bilo ugašeno — tracking se nastavlja. Na čemu si radio od {}?",
+            Fmt::hhmm(self.last_covered)
+        );
+        self.prompt_past_blocks(now, note);
+    }
+
     // MARK: - Nova verzija
 
     fn check_for_update_if_due(&mut self, now: DateTime<Local>) {
@@ -919,8 +1078,12 @@ impl TrackerEngine {
     // MARK: - Tick petlja
 
     pub fn tick(&mut self) {
+        if !self.launched {
+            return;
+        }
         let now = Local::now();
         let previous_tick = self.last_tick_at.replace(now);
+        self.persist_session();
 
         // Zaključan ekran se poll-a — vidi `SessionMonitor`. Prijelaz u zaključano pamti
         // trenutak, jer se od njega mjeri odsutnost. Ako je između tickova računalo spavalo,
@@ -952,7 +1115,7 @@ impl TrackerEngine {
                     .auto_stop_at
                     .is_some_and(|at| Store::day_key(at) != self.current_day_key)
             {
-                self.stop_at(last_tick.max(self.last_covered));
+                self.stop_at(last_tick.max(self.last_covered), None);
                 return;
             }
         }
@@ -961,7 +1124,7 @@ impl TrackerEngine {
         if self.settings.auto_stop_enabled {
             if let Some(stop_at) = self.auto_stop_at {
                 if now >= stop_at {
-                    self.stop_at(stop_at);
+                    self.stop_at(stop_at, None);
                     return;
                 }
                 if !self.auto_stop_warning_shown
@@ -975,7 +1138,7 @@ impl TrackerEngine {
         // Ograda za sesiju koja je prenoćila (zatvoren laptop, često s otvorenim promptom):
         // period ne smije prijeći u novi dan.
         if let Some(cutoff) = self.overnight_cutoff(now) {
-            self.stop_at(cutoff);
+            self.stop_at(cutoff, None);
             return;
         }
 

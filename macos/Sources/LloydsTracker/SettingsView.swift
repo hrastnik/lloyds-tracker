@@ -70,7 +70,7 @@ struct SettingsView: View {
                     .disabled(!engine.settings.workdayStartEnabled)
                 Toggle("Ponudi i nadoknadu od tog vremena", isOn: $engine.settings.workdayStartBackfillEnabled)
                     .disabled(!engine.settings.workdayStartEnabled)
-                caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prvi prompt pita što si radio od \(workdayStartClock) do sada — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample). Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
+                caption("Određuje što pop-up nudi kad ga otvoriš nakon \(workdayStartClock). Uključeno: gumb „Start od \(workdayStartClock)” upisuje dan od \(workdayStartClock), pa te prompt odmah pita što si radio od \(workdayStartClock) — npr. probudiš laptop u \(workdayStartExample) i prompt te pita za \(workdayStartClock)–\(workdayStartExample) (tekući blok ide u sljedeći prompt). Strelicama ‹ › uz gumb pomičeš početak po intervalima — zadnji korak je start od sada. Isključeno: pop-up ima samo „Start” i tracking teče od trenutka klika — jutro ostaje neupisano.")
                 // Opis kao podnaslov u istom retku (a ne zaseban `caption`) — tab je ionako
                 // najviši, pa svaki red više diže visinu prozora.
                 Toggle(isOn: $engine.settings.skipWeekendReminders) {
@@ -83,7 +83,7 @@ struct SettingsView: View {
                 Toggle("Zaustavi tracking u zadano vrijeme", isOn: $engine.settings.autoStopEnabled)
                 DatePicker("Vrijeme", selection: autoStopTime, displayedComponents: .hourAndMinute)
                     .disabled(!engine.settings.autoStopEnabled)
-                caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije dan se sam zatvara — pa tracking ne ostane pokrenut preko noći.")
+                caption("Minutu prije iskoči upozorenje s produženjem (+15 / +30 / +45 / +1 h), koje vrijedi samo za taj dan. Bez reakcije — ili ako je računalo tada ugašeno ili spava — dan se zatvara u to vrijeme, a prompt pita za blokove od zadnjeg zapisa.")
             }
 
             Section("Odsutnost") {
@@ -111,7 +111,7 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Toggle("Podsjetnik kod pokretanja (pop-up)", isOn: $engine.settings.showStartupReminder)
-                caption("Kad se app pokrene, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan — ali ne nakon vremena automatskog zaustavljanja, kad je radni dan gotov.")
+                caption("Kad se app pokrene u radnom vremenu, iskoči pop-up da te podsjeti da pokreneš radni dan ako tracking još nije aktivan. Prije početka radnog dana čeka zadano vrijeme, a nakon automatskog zaustavljanja šuti. Tracking prekinut gašenjem računala se sam nastavlja.")
             }
 
             Section("Nova verzija") {

@@ -392,7 +392,7 @@ fn start(app: Rc<App>) {
         });
     }
 
-    app.clone().mutate(|engine| engine.show_startup_reminder_if_needed());
+    app.clone().mutate(|engine| engine.launch());
 }
 
 fn install_css() {

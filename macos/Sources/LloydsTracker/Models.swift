@@ -106,11 +106,24 @@ struct PromptSegment {
 }
 
 /// Vremenski period bez opisa — preskočeni period koji se nosi dalje.
-struct PromptSpan: Equatable {
+struct PromptSpan: Codable, Equatable {
     var start: Date
     var end: Date
 
     var duration: TimeInterval { end.timeIntervalSince(start) }
+}
+
+/// Trackanje u tijeku, spremljeno u `session.json` — da ga gašenje računala (ili izlaz iz
+/// aplikacije) ne izgubi. Kod idućeg pokretanja se nastavi ili zatvori na kraju radnog dana.
+struct SavedSession: Codable, Equatable {
+    /// Zakazano automatsko zaustavljanje (s eventualnim produženjem).
+    var autoStopAt: Date?
+    /// Preskočeni periodi koji se nose u sljedeći prompt.
+    var carried: [PromptSpan] = []
+    var dayKey: String
+    /// Dan je već zatvoren i zadnji prompt čeka odgovor — kraj njegovog perioda.
+    var finalEnd: Date?
+    var lastCovered: Date
 }
 
 struct PromptRequest {

@@ -22,8 +22,9 @@ pub struct StartupReminder {
 }
 
 impl StartupReminder {
-    /// `start_options` (od početka radnog dana koji je već prošao do početka trenutnog
-    /// intervala, u koracima intervala) dodaje strelice ‹ › kojima se pomiče početak.
+    /// `start_options` (od početka radnog dana koji je već prošao — ili kraja zadnjeg današnjeg
+    /// unosa — do početka trenutnog intervala, po mreži intervala) dodaje strelice ‹ › kojima
+    /// se pomiče početak.
     /// `on_start` dobije odabrano vrijeme ili None za start od sada.
     pub fn new(
         app: &Application,
@@ -54,8 +55,8 @@ impl StartupReminder {
 
         let buttons = ui::hbox(10);
         let start_options = Rc::new(RefCell::new(start_options));
-        // Indeks u `start_options`. Zadano je početak radnog dana — to je razlog zašto je
-        // pop-up uopće iskočio u zadano vrijeme.
+        // Indeks u `start_options`. Zadano je najraniji početak (početak radnog dana ili kraj
+        // zadnjeg današnjeg unosa) — to je razlog zašto je pop-up uopće iskočio u zadano vrijeme.
         let selection = Rc::new(Cell::new(0usize));
 
         // Vrijeme je u samom gumbu, a ‹ › ga pomiču za jedan interval — jedan klik za
@@ -216,10 +217,8 @@ fn step_button(glyph: &str) -> Button {
 fn subtitle(backfill_from: Option<DateTime<Local>>) -> String {
     match backfill_from {
         None => "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.".to_string(),
-        Some(from) => format!(
-            "Radni dan počinje u {}, a tracking još nije pokrenut. Strelicama pomakni početak — \
-             prvi prompt te onda pita i za propušteno vrijeme.",
-            Fmt::hhmm(from)
-        ),
+        Some(_) => "Tracking još nije pokrenut. Strelicama odaberi od kad radiš — nakon Starta te \
+                    prompt odmah pita za propušteno vrijeme."
+            .to_string(),
     }
 }

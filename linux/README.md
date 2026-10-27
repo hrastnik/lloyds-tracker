@@ -140,6 +140,8 @@ Postavka se pamti.
 Podsjetnik da se pokrene tracking javlja se na dva načina:
 
 - **Kod pokretanja aplikacije** — pop-up čim se app digne (npr. nakon paljenja računala).
+  Upaljeno prije početka radnog dana (npr. u 8:00 uz početak u 8:30) šuti i javi se tek u
+  zadano vrijeme.
 - **U zadano vrijeme početka radnog dana** (default **8:30**) — isti pop-up iskoči u to
   vrijeme, a ako je računalo tada spavalo, čim ga probudiš. Javlja se jednom dnevno;
   *Kasnije* ga zatvara do sutra, a pokretanje dana iz menija ga također preskače.
@@ -156,10 +158,11 @@ Uz uključenu **nadoknadu** (default) pop-up, kad je radni dan već počeo, nudi
 8:45 … 9:15, 9:30). Zadnji korak je početak trenutnog intervala — isto što i start od sada.
 Dok pop-up stoji otvoren, ponuda prati sat (u 11:05 zadnji korak je 11:00), a već odabrano
 vrijeme ostaje odabrano.
-Nadoknada samo pomiče početak trackanja unatrag — prvi prompt onda pita za cijelo jutro
-(8:30–9:45) i to razdoblje možeš razbiti na više unosa (`✂`).
-Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, kreće se od kraja
-zadnjeg unosa. Nadoknada se uvijek odnosi na **današnji** dan.
+Nakon Starta prompt **odmah** pita za propušteno vrijeme — od odabranog početka do početka
+tekućeg intervala (start od 8:30 u 9:42 → 8:30–9:30); tekući interval ide u sljedeći,
+redovni prompt. To razdoblje možeš razbiti na više unosa (`✂`).
+Postojeći unosi se ne diraju: ako je jutro već djelomično zabilježeno, ponuda počinje od
+kraja zadnjeg današnjeg unosa. Nadoknada se uvijek odnosi na **današnji** dan.
 
 ### Odsutnost
 
@@ -222,6 +225,20 @@ zaustavljanje je zakazano za sutra) smije prijeći ponoć dok računalo radi. Ak
 **spavalo** preko granice dana (≥ 30 min bez ticka, npr. poklopac zatvoren navečer), dan se
 zatvara u trenutku kad je zaspalo, a zadnji prompt pita samo za period do tada.
 
+#### Računalo ugašeno usred dana
+
+Tracking u tijeku pamti se u `session.json`, pa gašenje ili restart računala (i gašenje
+aplikacije) ne izgubi dan:
+
+- **Upališ ga isti dan, još u radnom vremenu** — tracking se sam nastavlja (bez pop-upa) i
+  prompt odmah pita što si radio od zadnjeg zapisa do početka tekućeg intervala.
+- **Upališ ga nakon kraja radnog dana (ili sutra)** — dan se zatvara u zadano vrijeme
+  zaustavljanja (uz eventualno produženje), a zadnji prompt pita za blokove od zadnjeg
+  zapisa do tada — isto kao kad je laptop tada bio zatvoren.
+- Zadnji prompt kraja dana koji je čekao odgovor pita se ponovno.
+
+Pauza i odsutnost se ne pamte — nakon gašenja se nastavlja kao rad.
+
 ### Nova verzija
 
 Jednom dnevno (prvi put ~15 s nakon pokretanja) aplikacija pita GitHub za zadnji release
@@ -268,6 +285,7 @@ Sve je lokalno, u istom čitljivom JSON formatu kao macOS i Windows verzija:
 ~/.local/share/LloydsTracker/          # ili $XDG_DATA_HOME/LloydsTracker
 ├── 2026-07-15.json   # unosi po danu (start, end, text, kind)
 ├── history.json      # povijest unosa za pre-fill
+├── session.json      # tracking u tijeku (nastavak nakon gašenja računala)
 └── settings.json     # postavke
 ```
 

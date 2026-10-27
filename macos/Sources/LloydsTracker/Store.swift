@@ -65,6 +65,24 @@ enum Store {
         try? data.write(to: historyURL, options: .atomic)
     }
 
+    // MARK: Sesija
+
+    private static var sessionURL: URL { directory.appendingPathComponent("session.json") }
+
+    static func loadSession() -> SavedSession? {
+        load(SavedSession.self, from: sessionURL)
+    }
+
+    /// nil briše datoteku — tracking nije u tijeku.
+    static func saveSession(_ session: SavedSession?) {
+        guard let session else {
+            try? FileManager.default.removeItem(at: sessionURL)
+            return
+        }
+        guard let data = try? encoder.encode(session) else { return }
+        try? data.write(to: sessionURL, options: .atomic)
+    }
+
     // MARK: Pokvarene datoteke
 
     /// Nepostojeća datoteka → nil. Datoteka koja se ne da pročitati ili dekodirati (krnja,

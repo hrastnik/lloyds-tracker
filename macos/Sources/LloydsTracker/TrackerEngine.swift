@@ -71,6 +71,13 @@ final class TrackerEngine: ObservableObject {
     private var updateCheckInFlight = false
     /// Nova verzija čiji pop-up čeka da se makne prompt/podsjetnik.
     private var pendingUpdatePopup: AvailableUpdate?
+    /// Kraj perioda zadnjeg prompta dok dan čeka zadnji odgovor — sprema se uz sesiju.
+    private var finalEnd: Date?
+    /// Zadnje stanje zapisano u `session.json` (nil = datoteke nema).
+    private var savedSession: SavedSession?
+    /// Prekinuta sesija je obnovljena — do tad tick ne radi ništa, da ne prebriše
+    /// `session.json` niti ponudi podsjetnik prije nastavka.
+    private var launched = false
 
     /// Postavlja se iz view sloja — otvara prozor "Pregled dana".
     var openSummary: () -> Void = {}
@@ -112,22 +119,33 @@ final class TrackerEngine: ObservableObject {
 
         // Kratki delay da se app slegne (menu bar ikona, ekrani) prije pop-upa.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            Task { @MainActor in self?.showStartupReminderIfNeeded() }
+            Task { @MainActor in self?.launch() }
         }
     }
 
-    /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama i
-    /// dan još nije pokrenut (da se ne zaboravi startati tracking).
+    /// Nakon pokretanja: nastavi trackanje koje je prekinulo gašenje računala, a ako ga
+    /// nema — podsjetnik na početak dana.
+    private func launch() {
+        launched = true
+        restoreSession(now: Date())
+        showStartupReminderIfNeeded()
+    }
+
+    /// Pop-up podsjetnik na pokretanju — samo ako je uključen u postavkama, dan još nije
+    /// pokrenut (da se ne zaboravi startati tracking) i radno vrijeme traje. Prije početka
+    /// radnog dana šuti — javi se u zadano vrijeme (`checkWorkdayStart`).
     func showStartupReminderIfNeeded() {
+        let now = Date()
         guard settings.showStartupReminder, !isTracking, !prompt.isVisible,
-              !isSkippedWeekend(Date()), !isAfterWorkday(Date()) else { return }
-        presentStartReminder(now: Date())
+              !isSkippedWeekend(now), !isBeforeWorkday(now), !isAfterWorkday(now) else { return }
+        presentStartReminder(now: now)
     }
 
     // MARK: - Kontrole
 
     /// `backfillFrom` (iz podsjetnika na početak radnog dana) pomiče početak trackanja
-    /// unatrag — prvi prompt onda pita za cijelo jutro, npr. 8:30–9:45.
+    /// unatrag — prompt odmah pita za završene blokove jutra, npr. 8:30–9:45 kod starta u
+    /// 9:52 (tekući blok 9:45–10:00 ide u sljedeći prompt).
     func start(from backfillFrom: Date? = nil) {
         let now = Date()
         currentDayKey = Store.dayKey(now)
@@ -156,10 +174,25 @@ final class TrackerEngine: ObservableObject {
         carriedSpans = []
         pendingReturn = nil
         awaitingFinalAnswer = false
+        finalEnd = nil
         nextPromptAt = alignedNextPrompt(after: now)
         autoStopWarningShown = false
         autoStopAt = nextAutoStop(after: now)
         isTracking = true
+        persistSession()
+        if backfill != nil {
+            promptPastBlocks(now: now, note: "Nadoknada — na čemu si radio od \(Fmt.hhmm(lastCovered))?")
+        }
+    }
+
+    /// Odmah pita za završene blokove od `lastCovered` do početka tekućeg bloka (nadoknada
+    /// nakon starta od ranijeg vremena, nastavak nakon gašenja računala). Tekući blok ide u
+    /// sljedeći prompt — ako ovaj dočeka njegovu granicu, period mu se samo produži.
+    private func promptPastBlocks(now: Date, note: String) {
+        let blockStart = Self.gridFloor(now, step: interval)
+        guard blockStart.timeIntervalSince(lastCovered) > 60 else { return }
+        activePromptEnd = blockStart
+        show(PromptRequest(start: lastCovered, end: blockStart, note: note, allowSnooze: false))
     }
 
     func stop() {
@@ -176,7 +209,8 @@ final class TrackerEngine: ObservableObject {
 
     /// `endTime` je kraj zadnjeg perioda — kod automatskog zaustavljanja to je zakazano
     /// vrijeme, a ne trenutak kad se odgovori na zadnji prompt (koji može biti i sutra).
-    private func stop(at endTime: Date) {
+    /// `note` zamjenjuje zadanu poruku zadnjeg prompta.
+    private func stop(at endTime: Date, note: String? = nil) {
         guard isTracking, !awaitingFinalAnswer else { return }
         let now = Date()
         cancelAutoStop()
@@ -208,14 +242,15 @@ final class TrackerEngine: ObservableObject {
             // odrezan na kraj svog dana — to treba i pisati, da unos ne izgleda pogrešno.
             let overnight = Store.dayKey(endTime) != Store.dayKey(now)
             awaitingFinalAnswer = true
+            finalEnd = endTime
             show(PromptRequest(
                 start: periodStart,
                 // Prompt koji visi samo zbog preskočenih redova nema svoj period.
                 end: hasPeriod ? periodEnd : periodStart,
                 isFinal: true,
-                note: overnight
+                note: note ?? (overnight
                     ? "Prompt je prenoćio — period je odrezan na kraj radnog dana (\(Fmt.hhmm(endTime)))."
-                    : "Kraj dana — što si radio u zadnjem periodu?",
+                    : "Kraj dana — što si radio u zadnjem periodu?"),
                 allowSnooze: false
             ))
         } else {
@@ -226,6 +261,7 @@ final class TrackerEngine: ObservableObject {
     private func finalizeStop() {
         isTracking = false
         awaitingFinalAnswer = false
+        finalEnd = nil
         carriedSpans = []
         pendingReturn = nil
         cancelAutoStop()
@@ -233,6 +269,7 @@ final class TrackerEngine: ObservableObject {
         sessionStart = nil
         awaitingReturnSince = nil
         persistDay()
+        persistSession()
         summaryDayRequest = Fmt.dayKey.date(from: currentDayKey) ?? Date()
         openSummary()
     }
@@ -466,6 +503,12 @@ final class TrackerEngine: ObservableObject {
         // zaustavljanje je zakazano za sutra) se ne prekida — dok računalo radi; spavanje
         // preko ponoći hvata `tick` (`sleepGap`).
         if settings.autoStopEnabled, let stopAt = autoStopAt, stopAt > now { return nil }
+        return sessionDayCutoff()
+    }
+
+    /// Kraj radnog dana na dan sesije — vidi `overnightCutoff`; koristi ga i sesija koju je
+    /// prekinulo gašenje računala.
+    private func sessionDayCutoff() -> Date? {
         guard let sessionDay = Fmt.dayKey.date(from: currentDayKey) else { return nil }
         let configured = Calendar.current.date(
             bySettingHour: min(max(settings.autoStopHour, 0), 23),
@@ -526,33 +569,52 @@ final class TrackerEngine: ObservableObject {
     /// početak radnog dana. Bez auto-stopa kraj nije zadan, a auto-stop prije početka
     /// radnog dana (rad preko ponoći) ne omeđuje dan — u oba slučaja nema ograničenja.
     private func isAfterWorkday(_ date: Date) -> Bool {
-        guard settings.autoStopEnabled else { return false }
-        let end = min(max(settings.autoStopHour, 0), 23) * 60 + min(max(settings.autoStopMinute, 0), 59)
-        let start = min(max(settings.workdayStartHour, 0), 23) * 60 + min(max(settings.workdayStartMinute, 0), 59)
-        guard end > start else { return false }
+        guard settings.autoStopEnabled, workdayBounded else { return false }
         let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
-        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0) >= end
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0) >= autoStopMinuteOfDay
+    }
+
+    /// Radni dan još nije počeo — paljenje računala u 7:45 uz početak u 8:30 ne nudi start,
+    /// podsjetnik iskoči tek u 8:30. Isto kao kod `isAfterWorkday`: rad preko ponoći (auto-stop
+    /// prije početka radnog dana) nije omeđen.
+    private func isBeforeWorkday(_ date: Date) -> Bool {
+        guard let start = workdayStart(on: date) else { return false }
+        if settings.autoStopEnabled, !workdayBounded { return false }
+        return date < start
+    }
+
+    /// Kraj radnog dana (auto-stop) je iza početka — dan se ne proteže preko ponoći.
+    private var workdayBounded: Bool {
+        let start = min(max(settings.workdayStartHour, 0), 23) * 60 + min(max(settings.workdayStartMinute, 0), 59)
+        return autoStopMinuteOfDay > start
+    }
+
+    private var autoStopMinuteOfDay: Int {
+        min(max(settings.autoStopHour, 0), 23) * 60 + min(max(settings.autoStopMinute, 0), 59)
     }
 
     /// Vrijeme od kojeg podsjetnik nudi nadoknadu ("Start od 8:30") — nil kad je opcija
     /// isključena, kad radni dan još nije počeo ili kad još nije prošao ni jedan cijeli
-    /// interval, pa se nadoknada ne bi razlikovala od starta od sada.
+    /// interval, pa se nadoknada ne bi razlikovala od starta od sada. Ono što je danas već
+    /// zapisano (npr. jutro prije ručnog Stopa) se ne nudi ponovno — tad je početak kraj
+    /// zadnjeg unosa.
     private func backfillStart(now: Date) -> Date? {
-        guard settings.workdayStartBackfillEnabled,
-              let start = workdayStart(on: now),
-              start < Self.gridFloor(now, step: interval) else { return nil }
-        return start
+        guard settings.workdayStartBackfillEnabled, let workday = workdayStart(on: now) else { return nil }
+        let recorded = currentDayKey == Store.dayKey(now) ? entries.map(\.end).max() : nil
+        let start = max(workday, recorded ?? workday)
+        return start < Self.gridFloor(now, step: interval) ? start : nil
     }
 
-    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa svakih
-    /// `interval` minuta, a zadnje je početak trenutnog intervala — od tamo kreće i start
+    /// Vremena kroz koja ‹ › u podsjetniku pomiču početak: od početka radnog dana pa po
+    /// mreži intervala, a zadnje je početak trenutnog intervala — od tamo kreće i start
     /// bez nadoknade, pa zasebni "od sada" ne treba (u 9:42 uz 15 min: 8:30 … 9:15, 9:30).
     /// Prazno → nema nadoknade.
     private func backfillOptions(now: Date) -> [Date] {
         guard let start = backfillStart(now: now) else { return [] }
         let current = Self.gridFloor(now, step: interval)
-        var options: [Date] = []
-        var t = start
+        var options = [start]
+        // Početak izvan mreže (kraj zadnjeg unosa u 12:03) — dalje se ide po mreži (12:15 …).
+        var t = Self.gridFloor(start, step: interval).addingTimeInterval(interval)
         while t < current {
             options.append(t)
             t = t.addingTimeInterval(interval)
@@ -632,6 +694,73 @@ final class TrackerEngine: ObservableObject {
         }
     }
 
+    // MARK: - Prekinuta sesija
+
+    /// Stanje trackanja u `session.json` — piše se samo kad se promijeni, a briše kad
+    /// tracking stane.
+    private func persistSession() {
+        let current = isTracking ? SavedSession(
+            autoStopAt: autoStopAt,
+            carried: carriedSpans,
+            dayKey: currentDayKey,
+            finalEnd: awaitingFinalAnswer ? finalEnd : nil,
+            lastCovered: lastCovered
+        ) : nil
+        guard current != savedSession else { return }
+        savedSession = current
+        Store.saveSession(current)
+    }
+
+    /// Trackanje koje je prekinulo gašenje računala (ili izlaz iz aplikacije). Ako radno
+    /// vrijeme istog dana još traje, tracking se sam nastavi i odmah pita za propušteno. Ako
+    /// je kraj radnog dana u međuvremenu prošao, dan se zatvori na kraju radnog dana, a
+    /// zadnji prompt pita za blokove od zadnjeg zapisa — kao da je računalo bilo upaljeno.
+    private func restoreSession(now: Date) {
+        guard let saved = Store.loadSession() else { return }
+        // Sesija "iz budućnosti" (sat je u međuvremenu vraćen unatrag) se ne nastavlja.
+        guard saved.dayKey <= Store.dayKey(now), saved.lastCovered <= now else {
+            Store.saveSession(nil)
+            return
+        }
+        savedSession = saved
+        currentDayKey = saved.dayKey
+        entries = Store.loadDay(saved.dayKey)
+        lastCovered = saved.lastCovered
+        carriedSpans = saved.carried
+        autoStopAt = saved.autoStopAt
+        sessionStart = saved.lastCovered
+        isTracking = true
+
+        if let end = saved.finalEnd {
+            // Dan je bio zatvoren, a zadnji prompt bez odgovora — pita se opet.
+            stop(at: end)
+            return
+        }
+        let offNote: (Date) -> String = { end in
+            let day = Store.dayKey(end) == Store.dayKey(now) ? "" : " (\(Fmt.dayTitle.string(from: end)))"
+            return "Računalo je bilo ugašeno — tracking je zaustavljen u \(Fmt.hhmm(end))\(day). Što si radio od zadnjeg zapisa?"
+        }
+        if saved.dayKey != Store.dayKey(now) {
+            // Sesija od nekog prošlog dana: kraj je njeno zakazano zaustavljanje ako je
+            // padalo u taj dan, inače kraj radnog dana iz postavki (kao kod prenoćenog prompta).
+            let end = saved.autoStopAt.flatMap { Store.dayKey($0) == saved.dayKey ? $0 : nil }
+                ?? sessionDayCutoff() ?? lastCovered
+            stop(at: end, note: offNote(end))
+            return
+        }
+        if let stopAt = autoStopAt, now >= stopAt {
+            stop(at: stopAt, note: offNote(stopAt))
+            return
+        }
+        // Radno vrijeme još traje — tracking ide dalje.
+        workdayReminderDayKey = currentDayKey
+        nextPromptAt = alignedNextPrompt(after: now)
+        promptPastBlocks(
+            now: now,
+            note: "Računalo je bilo ugašeno — tracking se nastavlja. Na čemu si radio od \(Fmt.hhmm(lastCovered))?"
+        )
+    }
+
     // MARK: - Nova verzija
 
     private func checkForUpdateIfDue(now: Date) {
@@ -700,9 +829,11 @@ final class TrackerEngine: ObservableObject {
     // MARK: - Tick petlja
 
     private func tick() {
+        guard launched else { return }
         let now = Date()
         let previousTick = lastTickAt
         lastTickAt = now
+        persistSession()
         checkWorkdayStart(now: now)
         refreshStartReminderOptions(now: now)
         checkForUpdateIfDue(now: now)

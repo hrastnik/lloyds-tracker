@@ -68,6 +68,23 @@ internal static class Store
     public static void SaveHistory(IEnumerable<string> history)
         => WriteAtomic(HistoryPath, JsonSerializer.Serialize(history.ToList(), Options));
 
+    // MARK: Session
+
+    private static string SessionPath => Path.Combine(Directory, "session.json");
+
+    public static SavedSession? LoadSession() => Load<SavedSession>(SessionPath);
+
+    /// <summary>null deletes the file — tracking isn't in progress.</summary>
+    public static void SaveSession(SavedSession? session)
+    {
+        if (session == null)
+        {
+            try { File.Delete(SessionPath); } catch { /* best effort, like every write */ }
+            return;
+        }
+        WriteAtomic(SessionPath, JsonSerializer.Serialize(session, Options));
+    }
+
     // MARK: Corrupt files
 
     /// <summary>Missing file → null. A file that can't be read or deserialized (truncated,

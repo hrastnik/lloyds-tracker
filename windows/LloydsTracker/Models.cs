@@ -147,10 +147,47 @@ public sealed class AppSettings
 /// goes back into the next prompt.</summary>
 public readonly record struct PromptSegment(DateTime Start, DateTime End, string Text);
 
-/// <summary>A period with no description — a skipped period carried forward.</summary>
-public readonly record struct PromptSpan(DateTime Start, DateTime End)
+/// <summary>A period with no description — a skipped period carried forward. Saved with the
+/// session (SavedSession), keys alphabetical like every other file.</summary>
+public readonly record struct PromptSpan(
+    [property: JsonPropertyName("start"), JsonPropertyOrder(1)] DateTime Start,
+    [property: JsonPropertyName("end"), JsonPropertyOrder(0)] DateTime End)
 {
+    [JsonIgnore]
     public double Duration => Fmt.Seconds(Start, End);
+}
+
+/// <summary>Tracking in progress, saved to session.json — so switching the computer off (or
+/// quitting the app) doesn't lose it. On the next launch it continues or closes at the end of the
+/// work day. Properties are alphabetical, like every other file (macOS writes sortedKeys).</summary>
+public sealed class SavedSession
+{
+    /// <summary>The scheduled automatic stop (with any extension).</summary>
+    [JsonPropertyName("autoStopAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? AutoStopAt { get; set; }
+
+    /// <summary>Skipped periods carried into the next prompt.</summary>
+    [JsonPropertyName("carried")]
+    public List<PromptSpan> Carried { get; set; } = new();
+
+    [JsonPropertyName("dayKey")]
+    public string DayKey { get; set; } = "";
+
+    /// <summary>The day is already closed and the final prompt waits for an answer — the end of
+    /// its period.</summary>
+    [JsonPropertyName("finalEnd")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? FinalEnd { get; set; }
+
+    [JsonPropertyName("lastCovered")]
+    public DateTime LastCovered { get; set; }
+
+    /// <summary>Value equality — the engine rewrites session.json only when the state changes.</summary>
+    public bool SameAs(SavedSession? other)
+        => other != null && AutoStopAt == other.AutoStopAt && DayKey == other.DayKey
+            && FinalEnd == other.FinalEnd && LastCovered == other.LastCovered
+            && Carried.SequenceEqual(other.Carried);
 }
 
 public sealed class PromptRequest

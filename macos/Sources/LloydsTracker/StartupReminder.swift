@@ -14,8 +14,9 @@ final class StartupReminderController {
 
     var isVisible: Bool { window != nil }
 
-    /// `startOptions` (od početka radnog dana koji je već prošao do početka trenutnog
-    /// intervala, u koracima intervala) dodaje strelice ‹ › kojima se pomiče početak.
+    /// `startOptions` (od početka radnog dana koji je već prošao — ili kraja zadnjeg današnjeg
+    /// unosa — do početka trenutnog intervala, po mreži intervala) dodaje strelice ‹ › kojima
+    /// se pomiče početak.
     /// `onStart` dobije odabrano vrijeme ili nil za start od sada.
     func show(
         dayTitle: String,
@@ -96,8 +97,8 @@ final class StartupReminderController {
 @MainActor
 final class StartupReminderModel: ObservableObject {
     @Published var startOptions: [Date]
-    /// Indeks u `startOptions`. Zadano je početak radnog dana — to je razlog zašto je
-    /// pop-up uopće iskočio u zadano vrijeme.
+    /// Indeks u `startOptions`. Zadano je najraniji početak (početak radnog dana ili kraj
+    /// zadnjeg današnjeg unosa) — to je razlog zašto je pop-up uopće iskočio u zadano vrijeme.
     @Published var selection = 0
 
     init(startOptions: [Date]) {
@@ -113,7 +114,7 @@ struct StartupReminderView: View {
     let onDismiss: () -> Void
 
     /// Nije prazno → nudi se i nadoknada jutra: početak se strelicama pomiče od početka
-    /// radnog dana do početka trenutnog intervala, u koracima intervala.
+    /// radnog dana (ili kraja zadnjeg današnjeg unosa) do početka trenutnog intervala.
     private var startOptions: [Date] { model.startOptions }
 
     private var selection: Int {
@@ -230,9 +231,9 @@ struct StartupReminderView: View {
     }
 
     private var subtitle: String {
-        guard let from = startOptions.first else {
+        guard !startOptions.isEmpty else {
             return "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme."
         }
-        return "Radni dan počinje u \(Fmt.hhmm(from)), a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
+        return "Tracking još nije pokrenut. Strelicama odaberi od kad radiš — nakon Starta te prompt odmah pita za propušteno vrijeme."
     }
 }

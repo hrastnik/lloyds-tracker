@@ -20,8 +20,8 @@ internal sealed class StartupReminderController
     public DateTime? ShownBackfillFrom { get; private set; }
 
     /// <summary><paramref name="startOptions"/> (from a start of the work day that has already
-    /// passed up to the start of the current interval, in interval steps) adds ‹ › arrows that move
-    /// the start. <paramref name="onStart"/> gets the chosen time, or null to start from now.</summary>
+    /// passed — or the end of today's last entry — up to the start of the current interval, along
+    /// the interval grid) adds ‹ › arrows that move the start. <paramref name="onStart"/> gets the chosen time, or null to start from now.</summary>
     public void Show(string dayTitle, IReadOnlyList<DateTime> startOptions, Action<DateTime?> onStart, Action onDismiss)
     {
         if (IsVisible) return;
@@ -69,10 +69,12 @@ internal sealed class StartupReminderForm : Form
     private readonly Action<DateTime?> _onStart;
     private readonly Action _onDismiss;
     /// <summary>Not empty → the morning backfill is offered too: the arrows move the start from the
-    /// start of the work day up to the start of the current interval, in interval steps.</summary>
+    /// start of the work day (or the end of today's last entry) up to the start of the current
+    /// interval.</summary>
     private IReadOnlyList<DateTime> _startOptions;
-    /// <summary>Index into <see cref="_startOptions"/>. The default is the start of the work day —
-    /// that's the reason the pop-up appeared at the set time in the first place.</summary>
+    /// <summary>Index into <see cref="_startOptions"/>. The default is the earliest start (the start
+    /// of the work day, or the end of today's last entry) — that's the reason the pop-up appeared
+    /// at the set time in the first place.</summary>
     private int _selection;
     private Label _subtitle = null!;
     private FlatButton _start = null!;
@@ -188,7 +190,7 @@ internal sealed class StartupReminderForm : Form
         int at = SelectedStart() is DateTime selected ? IndexOf(options, selected) : -1;
         _selection = at >= 0 ? at : Math.Min(_selection, options.Count - 1);
         _startOptions = options;
-        // The work day start only changes with the settings — the subtitle keeps its height.
+        // The subtitle doesn't depend on the offered times — it keeps its height.
         _subtitle.Text = SubtitleText();
         ShowSelection();
         return true;
@@ -202,7 +204,7 @@ internal sealed class StartupReminderForm : Form
     }
 
     private string SubtitleText() => _startOptions.Count > 0
-        ? $"Radni dan počinje u {Fmt.Hhmm(_startOptions[0])}, a tracking još nije pokrenut. Strelicama pomakni početak — prvi prompt te onda pita i za propušteno vrijeme."
+        ? "Tracking još nije pokrenut. Strelicama odaberi od kad radiš — nakon Starta te prompt odmah pita za propušteno vrijeme."
         : "Tracking još nije pokrenut. Klikni Start da počneš bilježiti vrijeme.";
 
     private DateTime? SelectedStart()

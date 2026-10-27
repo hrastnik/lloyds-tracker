@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Local};
 use serde::de::DeserializeOwned;
 
-use crate::models::{AppSettings, Entry};
+use crate::models::{AppSettings, Entry, SavedSession};
 use crate::theme::Fmt;
 
 /// JSON pohrana u `$XDG_DATA_HOME/LloydsTracker/` (praktički `~/.local/share/LloydsTracker/`).
@@ -78,6 +78,30 @@ impl Store {
     pub fn save_history(history: &[String]) {
         if let Ok(json) = serde_json::to_string_pretty(history) {
             write_atomic(&Self::history_path(), &json);
+        }
+    }
+
+    // MARK: Sesija
+
+    fn session_path() -> PathBuf {
+        Self::directory().join("session.json")
+    }
+
+    pub fn load_session() -> Option<SavedSession> {
+        load(&Self::session_path())
+    }
+
+    /// `None` briše datoteku — tracking nije u tijeku.
+    pub fn save_session(session: Option<&SavedSession>) {
+        match session {
+            None => {
+                let _ = fs::remove_file(Self::session_path());
+            }
+            Some(session) => {
+                if let Ok(json) = serde_json::to_string_pretty(session) {
+                    write_atomic(&Self::session_path(), &json);
+                }
+            }
         }
     }
 }

@@ -17,8 +17,13 @@ vrijeme zaustavljanja.
 Ujutro te sam podsjeti: u zadano vrijeme početka radnog dana (default **8:30**) iskoči
 pop-up, a ako je računalo tada spavalo — čim ga probudiš. Ako laptop otvoriš tek u 9:30,
 nudi i **start od ranijeg vremena** (8:30, 8:45 … u koracima intervala), pa se jutro nadoknadi.
-Vikendom šuti (može se isključiti), a i nakon kraja radnog dana (vrijeme zaustavljanja) — računalo
-upaljeno navečer ne pita za početak dana.
+Nakon Starta prompt odmah pita za to propušteno vrijeme (bez tekućeg intervala, koji ide u
+sljedeći prompt). Vikendom šuti (može se isključiti), a i prije početka i nakon kraja radnog
+dana (vrijeme zaustavljanja) — računalo upaljeno u 8:00 ili navečer ne pita za početak dana.
+
+Gašenje računala usred dana ne izgubi tracking: upališ li ga još u radnom vremenu, tracking se
+sam nastavlja i odmah pita za propušteno; upališ li ga nakon kraja radnog dana, dan se zatvara
+u vrijeme zaustavljanja i pita za blokove od zadnjeg zapisa.
 
 Jednom dnevno provjeri na GitHubu je li izašla **nova verzija**. Ako je, javi se jednom
 pop-upom, a poveznica za preuzimanje ostaje u meniju. Ništa ne instalira samo.
@@ -118,6 +123,7 @@ međusobno kompatibilne):
 ```
 2026-07-15.json   # unosi po danu (start, end, text, kind)
 history.json      # povijest unosa za pre-fill
+session.json      # tracking u tijeku (nastavak nakon gašenja računala)
 settings.json     # postavke
 ```
 
